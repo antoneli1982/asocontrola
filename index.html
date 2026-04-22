@@ -489,11 +489,29 @@ const PROTECTION_PIN="1234";
 
 /* Sistema global de requisição de PIN.
    Uso: await askPin("descrição da ação") → true/false
-   Renderiza um modal bonito em vez do prompt() do navegador. */
+   Renderiza um modal bonito em vez do prompt() do navegador.
+
+   IMPORTANTE: O PIN é solicitado APENAS UMA VEZ por sessão.
+   Após validado, fica autorizado até o usuário deslogar ou fechar a aba.
+   A flag é guardada em sessionStorage — limpa automaticamente ao fechar navegador. */
 let _pinResolver=null;
 let _pinCtx={action:"",danger:false};
 const _pinListeners=new Set();
+
+/* Helpers de sessão do PIN */
+function _isPinAuthorized(){
+  try{return sessionStorage.getItem("aso_pin_ok")==="1"}catch(e){return false}
+}
+function _setPinAuthorized(){
+  try{sessionStorage.setItem("aso_pin_ok","1")}catch(e){}
+}
+function _clearPinAuthorized(){
+  try{sessionStorage.removeItem("aso_pin_ok")}catch(e){}
+}
+
 function askPin(action,danger=false){
+  /* Se já autorizou nessa sessão, retorna true imediatamente sem mostrar modal */
+  if(_isPinAuthorized())return Promise.resolve(true);
   return new Promise(res=>{
     _pinCtx={action,danger};
     _pinResolver=res;
@@ -503,6 +521,8 @@ function askPin(action,danger=false){
 function _resolvePin(val){
   const r=_pinResolver;_pinResolver=null;
   _pinListeners.forEach(l=>l(false));
+  /* Ao validar o PIN com sucesso, marca a sessão como autorizada */
+  if(val===true)_setPinAuthorized();
   if(r)r(val);
 }
 
@@ -2999,7 +3019,7 @@ function App(){
   const[themeName]=useState(()=>localStorage.getItem("aso_theme")||"Oceano");
   const currentTheme=THEMES[themeName]||THEMES["Oceano"];
   const login=(u,f,r)=>{localStorage.setItem("aso_logged",u);localStorage.setItem("aso_logged_foto",f||"");localStorage.setItem("aso_logged_role",r||"operacional");setUser(u);setUserFoto(f||"");setUserRole(r||"operacional")};
-  const logout=()=>{localStorage.removeItem("aso_logged");localStorage.removeItem("aso_logged_foto");localStorage.removeItem("aso_logged_role");setUser(null);setUserFoto("");setUserRole("operacional")};
+  const logout=()=>{localStorage.removeItem("aso_logged");localStorage.removeItem("aso_logged_foto");localStorage.removeItem("aso_logged_role");_clearPinAuthorized();setUser(null);setUserFoto("");setUserRole("operacional")};
   const updateFoto=(f)=>{localStorage.setItem("aso_logged_foto",f||"");setUserFoto(f||"")};
   return(
     <>
