@@ -268,14 +268,21 @@ const BACKUP_RETENTION=30; /* quantos backups manter */
    Cada entrada tem: quem, quando, qual ação, detalhe, e o SNAPSHOT COMPLETO dos registros ANTES da alteração
    — permitindo voltar atrás em qualquer passo. */
 const VERSION_RETENTION=50;
-async function saveVersion(user,action,detail){
+async function saveVersion(user,action,detail,recsSnapshot){
   try{
-    const recs=await dbGet("records");
-    const recsArr=Array.isArray(recs)?recs:(recs?Object.values(recs).filter(x=>x&&typeof x==="object"):[]);
+    /* Se o chamador já tem o array em memória, usa direto e evita 1 round-trip */
+    let recsArr;
+    if(Array.isArray(recsSnapshot)){
+      recsArr=recsSnapshot;
+    }else{
+      const recs=await dbGet("records");
+      recsArr=Array.isArray(recs)?recs:(recs?Object.values(recs).filter(x=>x&&typeof x==="object"):[]);
+    }
     /* Usa timestamp em ms como chave — garante ordenação cronológica e unicidade */
     const ts=Date.now();
     const key="v_"+ts;
-    await dbSet("versions/"+key,{
+    /* NÃO aguarda — dispara a escrita e parte pra rotação em paralelo */
+    db.ref("versions/"+key).set({
       ts,
       tsLabel:fmtNow(),
       user:user||"sistema",
@@ -283,19 +290,20 @@ async function saveVersion(user,action,detail){
       detail:detail||"",
       records:recsArr,
       recordCount:recsArr.length,
-    });
-    /* Rotação: mantém só as VERSION_RETENTION mais recentes */
-    const all=await dbGet("versions");
-    if(all){
-      const keys=Object.keys(all).sort(); /* mais antiga primeiro */
+    }).catch(e=>console.error("Erro ao gravar versão:",e));
+    /* Rotação enxuta: pega só as chaves (shallow) — sem trazer os snapshots */
+    /* limitToLast(VERSION_RETENTION+20) é barato e evita baixar os 50 snapshots completos */
+    db.ref("versions").orderByKey().limitToLast(VERSION_RETENTION+20).once("value").then(async snap=>{
+      const val=snap.val();
+      if(!val)return;
+      const keys=Object.keys(val).sort(); /* mais antiga primeiro */
       const excess=keys.length-VERSION_RETENTION;
       if(excess>0){
         const toDelete=keys.slice(0,excess);
-        for(const k of toDelete){
-          await db.ref("versions/"+k).remove();
-        }
+        /* Remoções em paralelo — não em loop serial */
+        await Promise.all(toDelete.map(k=>db.ref("versions/"+k).remove()));
       }
-    }
+    }).catch(e=>console.error("Erro na rotação de versões:",e));
   }catch(e){
     console.error("Erro ao salvar versão:",e);
     /* Erro de versionamento não deve bloquear a ação do usuário — apenas logar */
@@ -1755,40 +1763,52 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
       setConflictModal({type:"manual",newRecs:[{nome:nome.trim(),profissao:prof.trim(),dataAso:dAso.trim(),foto:""}],nome:nome.trim(),prof:prof.trim(),dAso:dAso.trim(),existingRecs:recsArr});
       return;
     }
-    await saveVersion(currentUser,"ADICIONOU REGISTRO",nome.trim()+" — "+dAso.trim());
-    dbSet("records",[{nome:nome.trim(),profissao:prof.trim(),dataAso:dAso.trim(),foto:""}]);
-    markInit();
-    addLog("ADICIONOU REGISTRO",currentUser,nome.trim()+" — "+dAso.trim());
+    const snapshotBefore=recsArr;
+    const detail=nome.trim()+" — "+dAso.trim();
+    /* UI responde imediatamente */
     setNome("");setProf("");setDAso("");setShowForm(false);
+    markInit();
+    dbSet("records",[{nome:nome.trim(),profissao:prof.trim(),dataAso:dAso.trim(),foto:""}]);
+    saveVersion(currentUser,"ADICIONOU REGISTRO",detail,snapshotBefore);
+    addLog("ADICIONOU REGISTRO",currentUser,detail);
   };
   const delSel=async()=>{
     if(!(await askPin("Excluir "+sel.size+" registro(s) selecionado(s)",true)))return;
     const names=recsArr.filter((_,i)=>sel.has(i)).map(r=>r.nome).join(", ");
-    await saveVersion(currentUser,"EXCLUIU REGISTROS",sel.size+" registro(s): "+names);
-    markInit();
+    const snapshotBefore=recsArr; /* snapshot ANTES da alteração, para a versão */
     const remaining=recsArr.filter((_,i)=>!sel.has(i));
-    dbSet("records",remaining.length>0?remaining:null);
-    addLog("EXCLUIU REGISTROS",currentUser,sel.size+" registro(s): "+names);
+    /* UI responde imediatamente: fecha modal e limpa seleção */
     setSel(new Set());setConfirmDelSel(false);
+    markInit();
+    /* Escrita principal (não bloqueia) — o listener vai atualizar a UI quando confirmar */
+    dbSet("records",remaining.length>0?remaining:null);
+    /* Auditoria em background — passa o snapshot pra evitar re-leitura */
+    saveVersion(currentUser,"EXCLUIU REGISTROS",sel.size+" registro(s): "+names,snapshotBefore);
+    addLog("EXCLUIU REGISTROS",currentUser,sel.size+" registro(s): "+names);
   };
   const delAll=async()=>{
     if(!(await askPin("LIMPAR TODOS os "+recsArr.length+" registros do banco",true)))return;
-    await saveVersion(currentUser,"LIMPOU TUDO",recsArr.length+" registros removidos");
-    markInit();
-    addLog("LIMPOU TUDO",currentUser,recsArr.length+" registros removidos");
-    dbSet("records",null);
+    const snapshotBefore=recsArr;
+    const count=recsArr.length;
+    /* UI responde imediatamente */
     setSel(new Set());setShowDel(false);
+    markInit();
+    dbSet("records",null);
+    saveVersion(currentUser,"LIMPOU TUDO",count+" registros removidos",snapshotBefore);
+    addLog("LIMPOU TUDO",currentUser,count+" registros removidos");
   };
   const delOne=async(idx)=>{
     const r=recsArr[idx];
     if(!r)return;
     if(!(await askPin("Excluir registro de "+r.nome,true)))return;
-    await saveVersion(currentUser,"EXCLUIU REGISTRO",r.nome+" — "+r.dataAso);
-    markInit();
-    addLog("EXCLUIU REGISTRO",currentUser,r.nome+" — "+r.dataAso);
+    const snapshotBefore=recsArr;
     const remaining=recsArr.filter((_,i)=>i!==idx);
-    dbSet("records",remaining.length>0?remaining:null);
+    /* UI responde imediatamente */
     const ns=new Set(sel);ns.delete(idx);setSel(ns);setConfirmDelOne(null);
+    markInit();
+    dbSet("records",remaining.length>0?remaining:null);
+    saveVersion(currentUser,"EXCLUIU REGISTRO",r.nome+" — "+r.dataAso,snapshotBefore);
+    addLog("EXCLUIU REGISTRO",currentUser,r.nome+" — "+r.dataAso);
   };
 
   /* EDIT RECORD */
@@ -1802,6 +1822,7 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
     if(!editData.nome.trim()||!editData.dataAso.trim())return;
     if(!(await askPin("Salvar edição de "+editData.nome.trim())))return;
     const original=recsArr[editRec];
+    const snapshotBefore=recsArr;
     /* Detalhe mostra o que mudou, campo por campo */
     const diffs=[];
     if(original){
@@ -1810,10 +1831,15 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
       if(original.dataAso!==normDate(editData.dataAso.trim()))diffs.push("data: \""+original.dataAso+"\" → \""+normDate(editData.dataAso.trim())+"\"");
       if((original.foto||"")!==(editData.foto||""))diffs.push("foto alterada");
     }
-    await saveVersion(currentUser,"EDITOU REGISTRO",editData.nome.trim()+(diffs.length?" | "+diffs.join(" · "):" — "+editData.dataAso.trim()));
-    setRecs(p=>p.map((r,i)=>i===editRec?{...r,nome:editData.nome.trim(),profissao:editData.profissao.trim(),dataAso:normDate(editData.dataAso.trim()),foto:editData.foto}:r));
-    addLog("EDITOU REGISTRO",currentUser,editData.nome.trim()+(diffs.length?" | "+diffs.join(" · "):" — "+editData.dataAso.trim()));
+    const editIdx=editRec;
+    const detail=editData.nome.trim()+(diffs.length?" | "+diffs.join(" · "):" — "+editData.dataAso.trim());
+    /* UI fecha imediatamente */
     setEditRec(null);
+    /* Escrita principal (não aguarda) */
+    setRecs(p=>p.map((r,i)=>i===editIdx?{...r,nome:editData.nome.trim(),profissao:editData.profissao.trim(),dataAso:normDate(editData.dataAso.trim()),foto:editData.foto}:r));
+    /* Auditoria em background */
+    saveVersion(currentUser,"EDITOU REGISTRO",detail,snapshotBefore);
+    addLog("EDITOU REGISTRO",currentUser,detail);
   };
 
   /* ===== RESTAURAR ÚLTIMAS INFORMAÇÕES (Botão SOS) ===== */
