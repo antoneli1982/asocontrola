@@ -796,7 +796,24 @@ function Auth({onLogin}){
 }
 
 /* ===== USERS MANAGEMENT (Senior only) ===== */
-function UsersPanel({t,currentUser}){
+function UsersPanel({t,currentUser,userRole}){
+  /* ===== GUARDA DE ACESSO — apenas SÊNIOR pode ver este painel =====
+     Defesa em profundidade: mesmo que alguém burle o roteamento de abas,
+     o componente se recusa a renderizar dados sensíveis para não-sêniores. */
+  if(userRole!=="senior"){
+    return(
+      <div className="fade-in" style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"60px 24px",textAlign:"center"}}>
+        <div style={{width:84,height:84,borderRadius:"50%",background:"rgba(239,68,68,0.12)",border:"2px solid rgba(239,68,68,0.35)",display:"flex",alignItems:"center",justifyContent:"center",marginBottom:20,fontSize:42}}>🔒</div>
+        <h2 style={{margin:0,fontSize:22,fontWeight:800,color:t.text}}>Acesso Restrito</h2>
+        <p style={{margin:"10px 0 4px",fontSize:14,color:t.muted,maxWidth:420,lineHeight:1.6}}>A área de <strong style={{color:t.text}}>Gerenciamento de Usuários</strong> é exclusiva para administradores <strong style={{color:"#d97706"}}>SÊNIOR</strong>.</p>
+        <p style={{margin:"4px 0 0",fontSize:12,color:t.muted,opacity:0.8}}>Seu nível atual: <strong style={{color:"#0ea5e9"}}>OPERACIONAL</strong></p>
+        <div style={{marginTop:22,padding:"10px 16px",borderRadius:10,background:t.input,border:"1px solid "+t.border,fontSize:12,color:t.muted,display:"flex",alignItems:"center",gap:8}}>
+          <Ico t="shield" sz={14}/><span>Se você precisa desse acesso, solicite a um administrador sênior.</span>
+        </div>
+      </div>
+    );
+  }
+
   const[users,,loading]=useFirebase("users",{});
   const[confirmDel,setConfirmDel]=useState(null);
   const[search,setSearch]=useState("");
@@ -2412,7 +2429,7 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
           <span>{restoreMsg.txt}</span>
         </div>}
 
-        {tab==="users"&&isSenior&&<UsersPanel t={t} currentUser={currentUser}/>}
+        {tab==="users"&&isSenior&&<UsersPanel t={t} currentUser={currentUser} userRole={userRole}/>}
         {tab==="logs"&&isSenior&&<LogPanel t={t}/>}
         {tab==="backups"&&isSenior&&<BackupPanel t={t} currentUser={currentUser}/>}
 
