@@ -31,6 +31,7 @@ select{-webkit-appearance:auto;appearance:auto}
 @keyframes avatarPop{0%{transform:scale(0.8);opacity:0}100%{transform:scale(1);opacity:1}}
 @keyframes slideRight{from{transform:translateX(100%)}to{transform:translateX(0)}}
 @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-8px)}75%{transform:translateX(8px)}}
+@keyframes asoSpin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 .fade-in{animation:fadeIn 0.3s ease-out}
 .banner-slide{animation:bannerSlide 0.4s ease-out}
 .avatar-pop{animation:avatarPop 0.3s ease-out}
@@ -2915,8 +2916,10 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
 function NoteModal({recName,recIdx,theme:t,onClose,onNoteChange}){
   const editorRef=useRef();
   const STORAGE_KEY="aso_note_"+recIdx;
-  const[savedMsg,setSavedMsg]=useState("");
+  const[saveStatus,setSaveStatus]=useState("idle"); /* idle | saving | saved */
   const[confirmClear,setConfirmClear]=useState(false);
+  const debounceRef=useRef(null);
+  const idleTimerRef=useRef(null);
 
   /* Cores da prancheta */
   const CB="#f5c518"; /* amarelo clip */
@@ -2930,21 +2933,44 @@ function NoteModal({recName,recIdx,theme:t,onClose,onNoteChange}){
     if(saved&&editorRef.current)editorRef.current.innerHTML=saved;
   },[]);
 
-  const exec=(cmd,val=null)=>{document.execCommand(cmd,false,val);editorRef.current?.focus()};
+  /* Cleanup dos timers ao desmontar — também salva o estado atual ao fechar para garantir */
+  useEffect(()=>()=>{
+    if(debounceRef.current)clearTimeout(debounceRef.current);
+    if(idleTimerRef.current)clearTimeout(idleTimerRef.current);
+    if(editorRef.current){
+      const html=editorRef.current.innerHTML;
+      const isEmpty=!html||html.replace(/<[^>]*>/g,"").trim().length===0;
+      if(isEmpty)localStorage.removeItem(STORAGE_KEY);
+      else localStorage.setItem(STORAGE_KEY,html);
+    }
+  },[]);
 
-  const saveNote=()=>{
-    if(editorRef.current)localStorage.setItem(STORAGE_KEY,editorRef.current.innerHTML);
-    setSavedMsg("✓ Salvo!");
-    setTimeout(()=>setSavedMsg(""),2000);
-    if(onNoteChange)onNoteChange();
+  const exec=(cmd,val=null)=>{document.execCommand(cmd,false,val);editorRef.current?.focus();handleInput()};
+
+  /* AUTO-SAVE — chamado a cada onInput do editor.
+     1) Salva imediatamente no localStorage (é local, é rápido).
+     2) Mostra "Salvando..." imediatamente; após 800ms sem nova edição, vira "✓ Salvo automaticamente".
+     3) Notifica o componente pai (atualiza filtro/contador de pranchetas) com debounce de 800ms para não poluir. */
+  const handleInput=()=>{
+    if(!editorRef.current)return;
+    const html=editorRef.current.innerHTML;
+    const isEmpty=html.replace(/<[^>]*>/g,"").trim().length===0;
+    if(isEmpty)localStorage.removeItem(STORAGE_KEY);
+    else localStorage.setItem(STORAGE_KEY,html);
+
+    setSaveStatus("saving");
+    if(idleTimerRef.current)clearTimeout(idleTimerRef.current);
+    idleTimerRef.current=setTimeout(()=>setSaveStatus("saved"),800);
+
+    if(debounceRef.current)clearTimeout(debounceRef.current);
+    debounceRef.current=setTimeout(()=>{if(onNoteChange)onNoteChange()},800);
   };
 
   const clearNote=()=>{
     localStorage.removeItem(STORAGE_KEY);
     if(editorRef.current)editorRef.current.innerHTML="";
     setConfirmClear(false);
-    setSavedMsg("✓ Anotação removida");
-    setTimeout(()=>setSavedMsg(""),2000);
+    setSaveStatus("idle");
     if(onNoteChange)onNoteChange();
   };
 
@@ -2957,6 +2983,7 @@ function NoteModal({recName,recIdx,theme:t,onClose,onNoteChange}){
   const insertBullet=(icon,label)=>{
     editorRef.current?.focus();
     document.execCommand("insertHTML",false,`<div style="margin:4px 0">${icon} ${label}&nbsp;</div>`);
+    handleInput();
   };
 
   const NURSE_BULLETS=[
@@ -3013,10 +3040,22 @@ function NoteModal({recName,recIdx,theme:t,onClose,onNoteChange}){
               <div style={{fontWeight:800,fontSize:15,color:CT,letterSpacing:0.3}}>Anotações Clínicas</div>
               <div style={{fontSize:12,color:CS,fontWeight:600}}>👩‍⚕️ {recName}</div>
             </div>
-            {savedMsg&&<span style={{fontSize:12,color:"#15803d",fontWeight:700,background:"rgba(21,128,61,0.12)",padding:"3px 10px",borderRadius:20,border:"1px solid #15803d44"}}>{savedMsg}</span>}
+            {/* Indicador de auto-save — substitui o antigo botão Salvar */}
+            <span title="As anotações são salvas automaticamente enquanto você digita" style={{
+              display:"inline-flex",alignItems:"center",gap:6,
+              fontSize:12,fontWeight:700,
+              padding:"5px 12px",borderRadius:20,
+              background:saveStatus==="saving"?"rgba(245,158,11,0.18)":saveStatus==="saved"?"rgba(21,128,61,0.12)":"rgba(120,53,15,0.08)",
+              color:saveStatus==="saving"?"#b45309":saveStatus==="saved"?"#15803d":CS,
+              border:"1px solid "+(saveStatus==="saving"?"rgba(245,158,11,0.35)":saveStatus==="saved"?"#15803d44":CS+"33"),
+              transition:"all 0.2s",whiteSpace:"nowrap"
+            }}>
+              {saveStatus==="saving"?<><span style={{display:"inline-block",width:10,height:10,borderRadius:"50%",border:"2px solid #b45309",borderTopColor:"transparent",animation:"asoSpin 0.8s linear infinite"}}/>Salvando…</>
+              :saveStatus==="saved"?<>✓ Salvo automaticamente</>
+              :<>💾 Auto-salvamento ativo</>}
+            </span>
             {localStorage.getItem(STORAGE_KEY)&&<button onClick={()=>setConfirmClear(true)} title="Limpar anotação (apaga a prancheta)" style={{background:"rgba(220,38,38,0.12)",border:"1px solid rgba(220,38,38,0.4)",color:"#b91c1c",padding:"5px 7px",borderRadius:7,cursor:"pointer",display:"flex",alignItems:"center"}}><Ico t="trash" sz={14}/></button>}
             <button onClick={printNote} title="Imprimir" style={{background:"rgba(120,53,15,0.1)",border:"1px solid "+CS+"66",color:CT,padding:"5px 7px",borderRadius:7,cursor:"pointer",display:"flex",alignItems:"center"}}><Ico t="print" sz={14}/></button>
-            <button onClick={saveNote} style={{background:"#b45309",border:"none",color:"#fffde7",padding:"6px 14px",borderRadius:8,cursor:"pointer",fontWeight:800,fontSize:13,letterSpacing:0.3}}>💾 Salvar</button>
             <button onClick={onClose} style={{background:"rgba(120,53,15,0.12)",border:"none",color:CT,padding:"5px 7px",borderRadius:7,cursor:"pointer",display:"flex",alignItems:"center"}}><Ico t="x" sz={18}/></button>
           </div>
 
@@ -3085,6 +3124,8 @@ function NoteModal({recName,recIdx,theme:t,onClose,onNoteChange}){
               contentEditable
               suppressContentEditableWarning
               spellCheck
+              onInput={handleInput}
+              onBlur={handleInput}
               style={{
                 minHeight:280,
                 padding:"16px 24px 16px 60px",
