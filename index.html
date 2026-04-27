@@ -2073,13 +2073,33 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
     URL.revokeObjectURL(url);
   };
 
-  /* Export XLSX — tabela completa ou filtrada por status (crítico/atenção/mês/ok) */
+  /* Extrai texto puro de uma anotação (HTML) preservando quebras de linha legíveis */
+  const noteToText=(idx)=>{
+    const html=localStorage.getItem("aso_note_"+idx);
+    if(!html)return"";
+    /* Insere \n nos blocos antes de remover tags */
+    let s=html
+      .replace(/<\s*br\s*\/?\s*>/gi,"\n")
+      .replace(/<\/(div|p|li|h[1-6])>/gi,"\n")
+      .replace(/<[^>]+>/g,"");
+    /* Decodifica entidades HTML básicas */
+    const ta=document.createElement("textarea");
+    ta.innerHTML=s;
+    s=ta.value;
+    /* Normaliza espaços e quebras */
+    s=s.replace(/\u00a0/g," ").replace(/\n{3,}/g,"\n\n").replace(/[ \t]+\n/g,"\n").trim();
+    return s;
+  };
+
+  /* Export XLSX — tabela completa ou filtrada por status (crítico/atenção/mês/ok) ou só com prancheta preenchida */
   const exportXLSX=(filter="all")=>{
-    let list=recsArr.slice();
+    /* Preserva o índice original (_i) ANTES de filtrar — necessário pra buscar aso_note_<i> no localStorage */
+    let list=recsArr.map((r,i)=>({...r,_i:i}));
     if(filter==="critical")list=list.filter(r=>parseDate(r.dataAso)&&daysUntil(nextDue(r.dataAso))<=2);
     else if(filter==="warning")list=list.filter(r=>parseDate(r.dataAso)&&daysUntil(nextDue(r.dataAso))<=7);
     else if(filter==="month")list=list.filter(r=>parseDate(r.dataAso)&&daysUntil(nextDue(r.dataAso))<=30);
     else if(filter==="ok")list=list.filter(r=>parseDate(r.dataAso)&&daysUntil(nextDue(r.dataAso))>30);
+    else if(filter==="notes")list=list.filter(r=>noteToText(r._i).length>0);
 
     /* Ordena por próximo vencimento (sem data vai pro fim) */
     list.sort((a,b)=>{
@@ -2101,6 +2121,7 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
       else if(d<=7)status="ATENÇÃO ("+d+"d)";
       else if(d<=30)status="NO MÊS ("+d+"d)";
       else status="OK ("+d+"d)";
+      const anotacao=noteToText(r._i);
       return{
         "Nome":r.nome||"",
         "Profissão":r.profissao||"",
@@ -2108,19 +2129,40 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
         "Próx. Vencimento":dataOk?nextDue(r.dataAso):"",
         "Dias até vencer":dataOk?d:"",
         "Status":status,
+        "Anotações (Prancheta)":anotacao,
       };
     });
 
-    const ws=XLSX.utils.json_to_sheet(rows,{header:["Nome","Profissão","Data ASO","Próx. Vencimento","Dias até vencer","Status"]});
-    ws["!cols"]=[{wch:32},{wch:22},{wch:14},{wch:18},{wch:14},{wch:18}];
-    /* Auto-filtro cobrindo cabeçalho + dados */
+    const ws=XLSX.utils.json_to_sheet(rows,{header:["Nome","Profissão","Data ASO","Próx. Vencimento","Dias até vencer","Status","Anotações (Prancheta)"]});
+    ws["!cols"]=[{wch:32},{wch:22},{wch:14},{wch:18},{wch:14},{wch:18},{wch:60}];
+    /* Habilita quebra de linha + alinhamento ao topo na coluna G (Anotações) e ajusta altura das linhas com nota */
     const lastRow=rows.length+1; /* +1 pelo cabeçalho */
-    ws["!autofilter"]={ref:"A1:F"+lastRow};
+    ws["!rows"]=[];
+    rows.forEach((r,i)=>{
+      const txt=r["Anotações (Prancheta)"]||"";
+      if(txt){
+        const lines=txt.split("\n").length;
+        /* Estima altura: ~15pt por linha visual, considera também quebras automáticas em colunas largas */
+        const wrapEst=Math.ceil(txt.length/70);
+        const totalLines=Math.max(lines,wrapEst);
+        ws["!rows"][i+1]={hpt:Math.min(180,Math.max(15,totalLines*15))};
+      }
+      const cellRef=XLSX.utils.encode_cell({c:6,r:i+1});
+      if(ws[cellRef]){
+        ws[cellRef].s={alignment:{wrapText:true,vertical:"top"}};
+      }
+    });
+    /* Cabeçalho também com wrap pra coluna larga */
+    const headRef=XLSX.utils.encode_cell({c:6,r:0});
+    if(ws[headRef])ws[headRef].s={alignment:{wrapText:true,vertical:"center"},font:{bold:true}};
+    /* Auto-filtro cobrindo cabeçalho + dados (agora 7 colunas: A..G) */
+    ws["!autofilter"]={ref:"A1:G"+lastRow};
     /* FREEZE PANE (correção: formato certo do SheetJS — `!views`, números de verdade) */
     ws["!views"]=[{state:"frozen",ySplit:1,xSplit:0,topLeftCell:"A2",activePane:"bottomLeft"}];
 
     /* Aba de metadados: ajuda a auditar exports */
-    const fLabelMap={all:"Todos",critical:"Críticos",warning:"Atenção",month:"No mês (≤30d)",ok:"OK (>30d)"};
+    const totalComNota=recsArr.reduce((acc,_r,i)=>acc+(noteToText(i)?1:0),0);
+    const fLabelMap={all:"Todos",critical:"Críticos",warning:"Atenção",month:"No mês (≤30d)",ok:"OK (>30d)",notes:"Com prancheta preenchida"};
     const metaRows=[
       ["Sistema","ASO CONTROLA!"],
       ["Exportado em",fmtNow()],
@@ -2128,6 +2170,7 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
       ["Filtro aplicado",fLabelMap[filter]||"Todos"],
       ["Total de registros exportados",rows.length],
       ["Total no sistema",recsArr.length],
+      ["Pranchetas preenchidas no sistema",totalComNota],
       ["","",],
       ["— Distribuição por status —",""],
       ["Vencidos",recsArr.filter(r=>parseDate(r.dataAso)&&daysUntil(nextDue(r.dataAso))<0).length],
@@ -2136,16 +2179,21 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
       ["No mês (≤30d)",recsArr.filter(r=>parseDate(r.dataAso)&&daysUntil(nextDue(r.dataAso))>7&&daysUntil(nextDue(r.dataAso))<=30).length],
       ["OK (>30d)",recsArr.filter(r=>parseDate(r.dataAso)&&daysUntil(nextDue(r.dataAso))>30).length],
       ["Sem data válida",recsArr.filter(r=>!parseDate(r.dataAso)).length],
+      ["","",],
+      ["— Dica para visualizar Anotações —",""],
+      ["1) Selecione a coluna G (Anotações)",""],
+      ["2) Aba Página Inicial → Quebrar Texto Automaticamente",""],
+      ["3) As quebras de linha das pranchetas vão aparecer corretamente",""],
     ];
     const wsMeta=XLSX.utils.aoa_to_sheet(metaRows);
     wsMeta["!cols"]=[{wch:34},{wch:28}];
 
     const wb=XLSX.utils.book_new();
-    const sheetName={all:"Todos",critical:"Críticos",warning:"Atenção",month:"No mês",ok:"OK"}[filter]||"ASOs";
+    const sheetName={all:"Todos",critical:"Críticos",warning:"Atenção",month:"No mês",ok:"OK",notes:"Com prancheta"}[filter]||"ASOs";
     XLSX.utils.book_append_sheet(wb,ws,sheetName);
     XLSX.utils.book_append_sheet(wb,wsMeta,"Informações");
 
-    const fLabel={all:"completo",critical:"criticos",warning:"atencao",month:"no-mes",ok:"ok"}[filter]||"completo";
+    const fLabel={all:"completo",critical:"criticos",warning:"atencao",month:"no-mes",ok:"ok",notes:"com-prancheta"}[filter]||"completo";
     const today=new Date().toISOString().slice(0,10);
     XLSX.writeFile(wb,"aso_controla_"+fLabel+"_"+today+".xlsx");
     addLog("EXPORTOU PLANILHA",currentUser,rows.length+" registros ("+fLabel+") em XLSX");
@@ -2582,13 +2630,14 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
               <div style={{position:"fixed",inset:0,zIndex:9998}} onClick={()=>setShowExportMenu(false)}/>
               <div style={{position:"fixed",top:exportMenuPos.top,left:exportMenuPos.left,background:t.card,border:"1px solid "+t.border,borderRadius:10,padding:4,zIndex:9999,boxShadow:"0 10px 30px rgba(0,0,0,0.4)",width:260}}>
                 <div style={{padding:"8px 12px 6px",fontSize:10,fontWeight:800,color:t.muted,textTransform:"uppercase",letterSpacing:1,borderBottom:"1px solid "+t.border+"66",marginBottom:4}}>📊 Exportar para Excel</div>
-                {[
+                {(()=>{const totalNotesExp=recsArr.reduce((acc,_r,i)=>acc+(noteToText(i)?1:0),0);return[
                   ["all","Tudo","📋","#8b5cf6",recsArr.length],
                   ["critical","Críticos (≤2 dias)","🚨","#ef4444",stats.c],
                   ["warning","Atenção (≤7 dias)","⚠️","#f59e0b",stats.w],
                   ["month","No mês (≤30 dias)","📅","#3b82f6",stats.m],
-                  ["ok","OK (>30 dias)","✅","#22c55e",stats.o]
-                ].map(([f,lab,emo,col,n])=>(
+                  ["ok","OK (>30 dias)","✅","#22c55e",stats.o],
+                  ["notes","Com prancheta preenchida","📝","#b45309",totalNotesExp]
+                ]})().map(([f,lab,emo,col,n])=>(
                   <button key={f} onClick={()=>{if(n>0){exportXLSX(f);setShowExportMenu(false)}}}
                     disabled={n===0}
                     style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,width:"100%",padding:"10px 12px",border:"none",borderLeft:"3px solid "+(n===0?t.border:col),borderRadius:6,background:"transparent",color:n===0?t.muted:t.text,fontSize:13,fontWeight:600,textAlign:"left",cursor:n===0?"not-allowed":"pointer",transition:"all 0.15s",opacity:n===0?0.45:1,marginBottom:2}}
@@ -2601,6 +2650,7 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
                     <span style={{fontSize:11,color:n===0?t.muted:"#fff",fontWeight:800,background:n===0?t.input:col,padding:"3px 10px",borderRadius:10,minWidth:32,textAlign:"center"}}>{n}</span>
                   </button>
                 ))}
+                <div style={{padding:"6px 12px 4px",fontSize:10,color:t.muted,borderTop:"1px solid "+t.border+"66",marginTop:4,fontStyle:"italic"}}>📝 Todas as exportações incluem a coluna <strong style={{color:"#b45309"}}>Anotações (Prancheta)</strong></div>
               </div>
             </>}
             <button onClick={toggleFullscreen} title={isFullscreen?"Sair da tela cheia":"Tela cheia"} style={bs(t.input,t.text)}><Ico t={isFullscreen?"minimize":"maximize"} sz={16}/></button>
