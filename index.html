@@ -1759,6 +1759,9 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
   const[inlineAdd,setInlineAdd]=useState(false);const[inNome,setInNome]=useState("");const[inProf,setInProf]=useState("");const[inDAso,setInDAso]=useState("");
   const[conflictModal,setConflictModal]=useState(null); /* {type:"import"|"manual"|"inline", newRecs:[], nome, prof, dAso} */
   const[noteRec,setNoteRec]=useState(null); /* {idx, nome} */
+  const[onlyWithNotes,setOnlyWithNotes]=useState(false); /* filtro: só registros com prancheta preenchida */
+  const[noteVersion,setNoteVersion]=useState(0); /* incrementa quando uma anotação é salva/excluída — força re-render */
+  const bumpNoteVersion=()=>setNoteVersion(v=>v+1);
   const[showImportWarn,setShowImportWarn]=useState(false);
   const fRef=useRef();const fRef2=useRef();const recFotoRef=useRef();const tableRef=useRef();
 
@@ -2155,13 +2158,18 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
     if(filterName){const fn=norm(filterName);list=list.filter(r=>norm(r.nome)===fn)}
     if(dateFrom){const df=parseDate(fromISO(dateFrom));if(df){list=list.filter(r=>{const d=parseDate(r.dataAso);return d&&d>=df})}}
     if(dateTo){const dt=parseDate(fromISO(dateTo));if(dt){dt.setHours(23,59,59);list=list.filter(r=>{const d=parseDate(r.dataAso);return d&&d<=dt})}}
-    if(view==="critical")list=list.filter(r=>daysUntil(nextDue(r.dataAso))<=2);
-    else if(view==="warning")list=list.filter(r=>daysUntil(nextDue(r.dataAso))<=7);
-    else if(view==="month")list=list.filter(r=>daysUntil(nextDue(r.dataAso))<=30);
-    else if(view==="ok")list=list.filter(r=>daysUntil(nextDue(r.dataAso))>30);
+    /* Filtro de pranchetas preenchidas: quando ativo, mostra apenas registros que têm anotação E ignora o filtro de situação (view), permitindo acesso independente do status */
+    if(onlyWithNotes){
+      list=list.filter(r=>{const n=localStorage.getItem("aso_note_"+r._i);return n&&n.replace(/<[^>]*>/g,"").trim().length>0});
+    }else{
+      if(view==="critical")list=list.filter(r=>daysUntil(nextDue(r.dataAso))<=2);
+      else if(view==="warning")list=list.filter(r=>daysUntil(nextDue(r.dataAso))<=7);
+      else if(view==="month")list=list.filter(r=>daysUntil(nextDue(r.dataAso))<=30);
+      else if(view==="ok")list=list.filter(r=>daysUntil(nextDue(r.dataAso))>30);
+    }
     list.sort((a,b)=>{let va,vb;if(sortBy==="dataAso"){va=parseDate(a.dataAso)||new Date(0);vb=parseDate(b.dataAso)||new Date(0)}else if(sortBy==="vencimento"){va=parseDate(nextDue(a.dataAso))||new Date(0);vb=parseDate(nextDue(b.dataAso))||new Date(0)}else{va=a[sortBy]?.toLowerCase()||"";vb=b[sortBy]?.toLowerCase()||""}return va<vb?(sortDir==="asc"?-1:1):va>vb?(sortDir==="asc"?1:-1):0});
     return list;
-  },[recsArr,filterName,dateFrom,dateTo,view,sortBy,sortDir]);
+  },[recsArr,filterName,dateFrom,dateTo,view,sortBy,sortDir,onlyWithNotes,noteVersion]);
 
   const stats=useMemo(()=>{let c=0,w=0,m=0,o=0;recsArr.forEach(r=>{const d=daysUntil(nextDue(r.dataAso));if(d<=2)c++;else if(d<=7)w++;else if(d<=30)m++;else o++});return{c,w,m,o,total:recsArr.length}},[recsArr]);
   const hasAlert=useMemo(()=>recsArr.some(r=>daysUntil(nextDue(r.dataAso))<=7),[recsArr]);
@@ -2510,6 +2518,44 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
                 <Ico t="x" sz={14}/><span className="btn-label">Limpar filtros</span>
               </button>
             :<span style={{fontSize:11,color:t.muted+"66",fontStyle:"italic"}}>Sem filtros ativos</span>}
+
+            {/* FILTRO DE PRANCHETAS PREENCHIDAS — toggle aceso/apagado, acessível a qualquer usuário (operacional e sênior); quando ativo, mostra TODAS as pranchetas independente do status (crítico/atenção/regular) */}
+            {(()=>{const totalNotes=recsArr.reduce((acc,_r,i)=>{const n=localStorage.getItem("aso_note_"+i);return acc+(n&&n.replace(/<[^>]*>/g,"").trim().length>0?1:0)},0);return(
+              <button
+                onClick={()=>setOnlyWithNotes(v=>!v)}
+                title={onlyWithNotes?"Filtro ATIVO — clique para desligar":"Mostrar apenas registros com prancheta preenchida (independente da situação)"}
+                style={{
+                  display:"flex",alignItems:"center",gap:8,
+                  padding:"6px 12px",borderRadius:10,cursor:"pointer",
+                  whiteSpace:"nowrap",
+                  background:onlyWithNotes?"linear-gradient(135deg,#fef08a,#f5c518)":t.input,
+                  border:"1.5px solid "+(onlyWithNotes?"#b45309":t.border),
+                  color:onlyWithNotes?"#78350f":t.muted,
+                  fontWeight:700,fontSize:12,
+                  boxShadow:onlyWithNotes?"0 0 0 3px rgba(245,197,24,0.25), 0 2px 8px rgba(245,197,24,0.4)":"none",
+                  transition:"all 0.2s"
+                }}>
+                <svg width="18" height="20" viewBox="0 0 22 26" fill="none" xmlns="http://www.w3.org/2000/svg" style={{opacity:onlyWithNotes?1:0.5,transition:"opacity 0.2s"}}>
+                  <rect x="7" y="0" width="8" height="5" rx="2" fill="#f5c518" stroke="#b45309" strokeWidth="1.1"/>
+                  <rect x="8.5" y="1" width="5" height="3" rx="1.2" fill="#fef3c7"/>
+                  <circle cx="11" cy="2.5" r="1" fill="#b45309"/>
+                  <rect x="2" y="3" width="18" height="22" rx="3" fill={onlyWithNotes?"#fef08a":"#e5e7eb"} stroke="#b45309" strokeWidth="1.4"/>
+                  <rect x="6" y="2" width="10" height="4" rx="2" fill="#f5c518" stroke="#b45309" strokeWidth="1.1"/>
+                  <line x1="5" y1="12" x2="17" y2="12" stroke="#fbbf24" strokeWidth="0.8"/>
+                  <line x1="5" y1="15" x2="17" y2="15" stroke="#fbbf24" strokeWidth="0.8"/>
+                  <line x1="5" y1="18" x2="17" y2="18" stroke="#fbbf24" strokeWidth="0.8"/>
+                  <line x1="5" y1="21" x2="14" y2="21" stroke="#fbbf24" strokeWidth="0.8"/>
+                  {onlyWithNotes&&<path d="M11 10.2 C11 10.2 8.2 7.8 7 9.3 C5.8 10.8 8 12.5 11 14.5 C14 12.5 16.2 10.8 15 9.3 C13.8 7.8 11 10.2 11 10.2Z" fill="#f43f5e" stroke="#be123c" strokeWidth="0.6"/>}
+                </svg>
+                <span className="btn-label">{onlyWithNotes?"Só pranchetas":"Pranchetas"}</span>
+                <span style={{
+                  fontSize:10,fontWeight:800,
+                  background:onlyWithNotes?"#b45309":t.border,
+                  color:onlyWithNotes?"#fffde7":t.muted,
+                  padding:"2px 7px",borderRadius:10,minWidth:20,textAlign:"center"
+                }}>{totalNotes}</span>
+              </button>
+            )})()}
           </div>
 
           {/* LINHA 2 — Ações */}
@@ -2566,10 +2612,11 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
           </div>
         </div>
         {/* Active filters display */}
-        {(filterName||dateFrom||dateTo)&&<div style={{marginBottom:14,display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+        {(filterName||dateFrom||dateTo||onlyWithNotes)&&<div style={{marginBottom:14,display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
           <span style={{fontSize:12,color:t.muted}}>Filtros:</span>
           {filterName&&<span style={{fontSize:13,fontWeight:600,color:t.accent,background:t.accent+"18",padding:"4px 12px",borderRadius:20,display:"inline-flex",alignItems:"center",gap:6}}><Ico t="user" sz={12}/>{filterName}<button onClick={()=>{setFilterName("");setNameSearch("")}} style={{background:"none",border:"none",color:t.accent,cursor:"pointer",padding:0,display:"flex"}}><Ico t="x" sz={14}/></button></span>}
           {(dateFrom||dateTo)&&<span style={{fontSize:13,fontWeight:600,color:"#d97706",background:"rgba(217,119,6,0.12)",padding:"4px 12px",borderRadius:20,display:"inline-flex",alignItems:"center",gap:6}}><Ico t="calendar" sz={12}/>{dateFrom?fromISO(dateFrom):"..."} → {dateTo?fromISO(dateTo):"..."}<button onClick={()=>{setDateFrom("");setDateTo("")}} style={{background:"none",border:"none",color:"#d97706",cursor:"pointer",padding:0,display:"flex"}}><Ico t="x" sz={14}/></button></span>}
+          {onlyWithNotes&&<span style={{fontSize:13,fontWeight:700,color:"#78350f",background:"linear-gradient(135deg,#fef08a,#f5c518)",padding:"4px 12px",borderRadius:20,display:"inline-flex",alignItems:"center",gap:6,border:"1px solid #b45309"}}>📋 Só com prancheta preenchida<button onClick={()=>setOnlyWithNotes(false)} style={{background:"none",border:"none",color:"#78350f",cursor:"pointer",padding:0,display:"flex"}}><Ico t="x" sz={14}/></button></span>}
         </div>}
 
         {/* IMPORT WARNING MODAL */}
@@ -2811,7 +2858,7 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
         </>}
 
         {/* NOTE MODAL */}
-        {noteRec&&<NoteModal recName={noteRec.nome} recIdx={noteRec.idx} theme={t} onClose={()=>setNoteRec(null)}/>}
+        {noteRec&&<NoteModal recName={noteRec.nome} recIdx={noteRec.idx} theme={t} onClose={()=>setNoteRec(null)} onNoteChange={bumpNoteVersion}/>}
 
         {/* PROFILE EDIT MODAL */}
         {showProfile&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:300,display:"flex",alignItems:"center",justifyContent:"center",padding:20}} onClick={()=>setShowProfile(false)}>
@@ -2865,10 +2912,11 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
 }
 
 /* ===== NOTE MODAL (Prancheta amarela) ===== */
-function NoteModal({recName,recIdx,theme:t,onClose}){
+function NoteModal({recName,recIdx,theme:t,onClose,onNoteChange}){
   const editorRef=useRef();
   const STORAGE_KEY="aso_note_"+recIdx;
   const[savedMsg,setSavedMsg]=useState("");
+  const[confirmClear,setConfirmClear]=useState(false);
 
   /* Cores da prancheta */
   const CB="#f5c518"; /* amarelo clip */
@@ -2888,6 +2936,16 @@ function NoteModal({recName,recIdx,theme:t,onClose}){
     if(editorRef.current)localStorage.setItem(STORAGE_KEY,editorRef.current.innerHTML);
     setSavedMsg("✓ Salvo!");
     setTimeout(()=>setSavedMsg(""),2000);
+    if(onNoteChange)onNoteChange();
+  };
+
+  const clearNote=()=>{
+    localStorage.removeItem(STORAGE_KEY);
+    if(editorRef.current)editorRef.current.innerHTML="";
+    setConfirmClear(false);
+    setSavedMsg("✓ Anotação removida");
+    setTimeout(()=>setSavedMsg(""),2000);
+    if(onNoteChange)onNoteChange();
   };
 
   const printNote=()=>{
@@ -2956,6 +3014,7 @@ function NoteModal({recName,recIdx,theme:t,onClose}){
               <div style={{fontSize:12,color:CS,fontWeight:600}}>👩‍⚕️ {recName}</div>
             </div>
             {savedMsg&&<span style={{fontSize:12,color:"#15803d",fontWeight:700,background:"rgba(21,128,61,0.12)",padding:"3px 10px",borderRadius:20,border:"1px solid #15803d44"}}>{savedMsg}</span>}
+            {localStorage.getItem(STORAGE_KEY)&&<button onClick={()=>setConfirmClear(true)} title="Limpar anotação (apaga a prancheta)" style={{background:"rgba(220,38,38,0.12)",border:"1px solid rgba(220,38,38,0.4)",color:"#b91c1c",padding:"5px 7px",borderRadius:7,cursor:"pointer",display:"flex",alignItems:"center"}}><Ico t="trash" sz={14}/></button>}
             <button onClick={printNote} title="Imprimir" style={{background:"rgba(120,53,15,0.1)",border:"1px solid "+CS+"66",color:CT,padding:"5px 7px",borderRadius:7,cursor:"pointer",display:"flex",alignItems:"center"}}><Ico t="print" sz={14}/></button>
             <button onClick={saveNote} style={{background:"#b45309",border:"none",color:"#fffde7",padding:"6px 14px",borderRadius:8,cursor:"pointer",fontWeight:800,fontSize:13,letterSpacing:0.3}}>💾 Salvar</button>
             <button onClick={onClose} style={{background:"rgba(120,53,15,0.12)",border:"none",color:CT,padding:"5px 7px",borderRadius:7,cursor:"pointer",display:"flex",alignItems:"center"}}><Ico t="x" sz={18}/></button>
@@ -3049,6 +3108,19 @@ function NoteModal({recName,recIdx,theme:t,onClose}){
             <span style={{fontSize:9,color:CS+"99"}}>Ctrl+B • Ctrl+I • Ctrl+U</span>
           </div>
         </div>
+
+        {/* CONFIRM CLEAR NOTE */}
+        {confirmClear&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:500,display:"flex",alignItems:"center",justifyContent:"center",padding:20}} onClick={()=>setConfirmClear(false)}>
+          <div className="fade-in" onClick={e=>e.stopPropagation()} style={{background:"#fffde7",borderRadius:16,padding:26,maxWidth:380,width:"100%",border:"2px solid #b45309",boxShadow:"0 20px 50px rgba(0,0,0,0.4)"}}>
+            <h3 style={{color:"#b91c1c",margin:"0 0 12px",display:"flex",alignItems:"center",gap:8,fontSize:16}}>🗑️ Limpar anotação?</h3>
+            <p style={{color:"#78350f",fontSize:13,margin:"0 0 8px",lineHeight:1.5}}>A prancheta de <strong>{recName}</strong> será apagada e voltará a ficar vazia.</p>
+            <p style={{color:"#b91c1c",fontSize:12,margin:"0 0 20px",fontWeight:600}}>Esta ação não pode ser desfeita.</p>
+            <div style={{display:"flex",gap:10,justifyContent:"flex-end"}}>
+              <button onClick={()=>setConfirmClear(false)} style={{background:"rgba(120,53,15,0.1)",border:"1px solid "+CS+"66",color:CT,padding:"8px 16px",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13}}>Cancelar</button>
+              <button onClick={clearNote} style={{background:"#dc2626",border:"none",color:"#fff",padding:"8px 16px",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:13}}>🗑️ Limpar</button>
+            </div>
+          </div>
+        </div>}
       </div>
     </div>
   );
