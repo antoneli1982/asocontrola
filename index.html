@@ -191,6 +191,14 @@ function statusColor(s){const d=daysUntil(s);if(d<0)return{color:"#dc2626",label
 function initials(name){return name.split(" ").filter(Boolean).slice(0,2).map(w=>w[0]).join("").toUpperCase()}
 function fmtNow(){const d=new Date();return d.toLocaleDateString("pt-BR")+" "+d.toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})}
 function norm(s){return(s||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase()}
+/* Identificador permanente do colaborador. Evita que informações troquem de pessoa quando a lista é ordenada, atualizada ou recebe exclusões. */
+function createRecordId(){
+  if(typeof crypto!=="undefined"&&crypto.randomUUID)return"rec_"+crypto.randomUUID();
+  return"rec_"+Date.now().toString(36)+"_"+Math.random().toString(36).slice(2,12);
+}
+function ensureRecordIds(list){
+  return(Array.isArray(list)?list:[]).map(r=>r&&r.recordId?r:{...r,recordId:createRecordId()});
+}
 
 function readFileAsBase64(file,maxW=200){
   return new Promise((res)=>{
@@ -1710,7 +1718,7 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
   const t=THEMES[tn];
   const[tab,setTab]=useState("dashboard");
   const[recs,setRecsLocal,recsLoading]=useFirebase("records",null);
-  const[notesMap,setNotesMap]=useFirebase("notes",{});
+  const[notesMap,setNotesMap,notesLoading]=useFirebase("notes",{});
   const[recsInit,setRecsInit]=useState(()=>localStorage.getItem("aso_rec_init")==="1");
   const markInit=()=>{localStorage.setItem("aso_rec_init","1");setRecsInit(true)};
   const recsArr=useMemo(()=>{
@@ -1722,7 +1730,8 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
   },[recs,recsInit,recsLoading]);
   const setRecs=(updater)=>{
     const newVal=typeof updater==="function"?updater(recsArr):updater;
-    dbSet("records",newVal&&newVal.length>0?newVal:null);
+    const safeVal=ensureRecordIds(newVal);
+    dbSet("records",safeVal&&safeVal.length>0?safeVal:null);
     markInit();
   };
   const[search,setSearch]=useState("");const[showForm,setShowForm]=useState(false);
@@ -1764,15 +1773,64 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
   const[isFullscreen,setIsFullscreen]=useState(false);
   const[inlineAdd,setInlineAdd]=useState(false);const[inNome,setInNome]=useState("");const[inProf,setInProf]=useState("");const[inDAso,setInDAso]=useState("");
   const[conflictModal,setConflictModal]=useState(null); /* {type:"import"|"manual"|"inline", newRecs:[], nome, prof, dAso} */
-  const[noteRec,setNoteRec]=useState(null); /* {idx, nome} */
-  const[onlyWithNotes,setOnlyWithNotes]=useState(false); /* filtro: só registros com prancheta preenchida */
-  const[noteVersion,setNoteVersion]=useState(0); /* incrementa quando uma anotação é salva/excluída — força re-render */
+  const[noteRec,setNoteRec]=useState(null); /* {key, nome} */
+  const[onlyWithNotes,setOnlyWithNotes]=useState(false); /* filtro: só colaboradores com informações preenchidas */
+  const[noteVersion,setNoteVersion]=useState(0); /* força atualização dos filtros/contadores de informações */
   const bumpNoteVersion=()=>setNoteVersion(v=>v+1);
-  /* Controle de múltiplos cliques por linha: 3 cliques liga a luz vermelha; 2 cliques desliga.
-     O estado é salvo dentro do próprio registro, sem mudar a posição do registro — assim as pranchetas continuam ligadas aos mesmos índices. */
+  /* Controle de múltiplos cliques por linha: 3 cliques liga a luz vermelha; 2 cliques desliga. */
   const rowClickRef=useRef({});
+  const identityMigrationBusyRef=useRef(false);
   const[showImportWarn,setShowImportWarn]=useState(false);
   const fRef=useRef();const fRef2=useRef();const recFotoRef=useRef();const tableRef=useRef();
+
+  /* MIGRAÇÃO SEGURA: transforma as antigas informações ligadas ao índice da linha em informações ligadas a um ID permanente.
+     Primeiro cria uma cópia de segurança no Firebase; depois copia cada texto para o colaborador atualmente correspondente. */
+  useEffect(()=>{
+    if(identityMigrationBusyRef.current||recsLoading||notesLoading||!recsArr.length)return;
+    const missingIds=recsArr.some(r=>!r.recordId);
+    const currentNotes=notesMap&&typeof notesMap==="object"?notesMap:{};
+    const legacyKeys=Object.keys(currentNotes).filter(k=>/^\d+$/.test(k));
+    if(!missingIds&&legacyKeys.length===0)return;
+    identityMigrationBusyRef.current=true;
+    (async()=>{
+      try{
+        const migratedRecords=ensureRecordIds(recsArr);
+        const migratedNotes={...currentNotes};
+        let notesChanged=false;
+
+        if(legacyKeys.length>0){
+          const backupKey="migration_"+Date.now();
+          await dbSet("notesMigrationBackups/"+backupKey,{
+            createdAt:Date.now(),createdAtLabel:fmtNow(),user:currentUser,notes:currentNotes
+          });
+          try{localStorage.setItem("aso_notes_backup_"+backupKey,JSON.stringify(currentNotes))}catch(e){}
+        }
+
+        migratedRecords.forEach((record,index)=>{
+          const stableKey=record.recordId;
+          const legacyKey=String(index);
+          const oldLocalKey="aso_note_"+legacyKey;
+          const newLocalKey="aso_note_"+stableKey;
+          const legacyLocal=localStorage.getItem(oldLocalKey);
+          const legacyFirebase=migratedNotes[legacyKey];
+          const source=migratedNotes[stableKey]||legacyFirebase||legacyLocal;
+          if(source&&!migratedNotes[stableKey]){migratedNotes[stableKey]=source;notesChanged=true}
+          if(Object.prototype.hasOwnProperty.call(migratedNotes,legacyKey)){delete migratedNotes[legacyKey];notesChanged=true}
+          if(source){
+            try{localStorage.setItem(newLocalKey,source);localStorage.removeItem(oldLocalKey)}catch(e){}
+          }
+        });
+
+        if(missingIds)await dbSet("records",migratedRecords);
+        if(notesChanged){
+          await dbSet("notes",Object.keys(migratedNotes).length?migratedNotes:null);
+          setNotesMap(migratedNotes);
+        }
+        if(missingIds||notesChanged)addLog("MIGROU INFORMAÇÕES",currentUser,"Informações vinculadas por ID permanente para evitar troca entre colaboradores");
+      }catch(e){console.error("Erro na migração segura das informações:",e)}
+      finally{identityMigrationBusyRef.current=false}
+    })();
+  },[recsLoading,notesLoading,recsArr,notesMap,currentUser]);
 
   useEffect(()=>{localStorage.setItem("aso_theme",tn)},[tn]);
 
@@ -1789,7 +1847,7 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
     if(!nome.trim()||!dAso.trim())return;
     if(!(await askPin("Adicionar novo registro: "+nome.trim())))return;
     if(recsArr.length>0){
-      setConflictModal({type:"manual",newRecs:[{nome:nome.trim(),profissao:prof.trim(),dataAso:dAso.trim(),foto:""}],nome:nome.trim(),prof:prof.trim(),dAso:dAso.trim(),existingRecs:recsArr});
+      setConflictModal({type:"manual",newRecs:[{nome:nome.trim(),profissao:prof.trim(),dataAso:dAso.trim(),foto:"",recordId:createRecordId()}],nome:nome.trim(),prof:prof.trim(),dAso:dAso.trim(),existingRecs:recsArr});
       return;
     }
     const snapshotBefore=recsArr;
@@ -1797,7 +1855,7 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
     /* UI responde imediatamente */
     setNome("");setProf("");setDAso("");setShowForm(false);
     markInit();
-    dbSet("records",[{nome:nome.trim(),profissao:prof.trim(),dataAso:dAso.trim(),foto:""}]);
+    dbSet("records",[{nome:nome.trim(),profissao:prof.trim(),dataAso:dAso.trim(),foto:"",recordId:createRecordId()}]);
     saveVersion(currentUser,"ADICIONOU REGISTRO",detail,snapshotBefore);
     addLog("ADICIONOU REGISTRO",currentUser,detail);
   };
@@ -2009,7 +2067,7 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
         }
         seen.set(chave,true);
 
-        parsed.push({nome:nomeRaw,profissao:profRaw,dataAso:dataFmt,foto:""});
+        parsed.push({nome:nomeRaw,profissao:profRaw,dataAso:dataFmt,foto:"",recordId:createRecordId()});
       });
 
       if(parsed.length===0){
@@ -2081,9 +2139,16 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
     URL.revokeObjectURL(url);
   };
 
-  /* Extrai texto puro de uma anotação (HTML) preservando quebras de linha legíveis */
-  const noteToText=(idx)=>{
-    const html=(notesMap&&notesMap[idx])||localStorage.getItem("aso_note_"+idx);
+  /* Cada informação usa o ID permanente do colaborador; o índice só é usado durante a migração de registros antigos. */
+  const recordNoteKey=(record,legacyIdx)=>record&&record.recordId?record.recordId:String(legacyIdx);
+  const getRecordNoteHtml=(record,legacyIdx)=>{
+    const key=recordNoteKey(record,legacyIdx);
+    return(notesMap&&notesMap[key])||localStorage.getItem("aso_note_"+key)||"";
+  };
+
+  /* Extrai texto puro das informações (HTML) preservando quebras de linha legíveis */
+  const noteToText=(record,legacyIdx)=>{
+    const html=getRecordNoteHtml(record,legacyIdx);
     if(!html)return"";
     /* Insere \n nos blocos antes de remover tags */
     let s=html
@@ -2099,15 +2164,15 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
     return s;
   };
 
-  /* Export XLSX — tabela completa ou filtrada por status (crítico/atenção/mês/ok) ou só com prancheta preenchida */
+  /* Export XLSX — tabela completa ou filtrada por status ou só com informações preenchidas */
   const exportXLSX=(filter="all",expDateFrom,expDateTo)=>{
-    /* Preserva o índice original (_i) ANTES de filtrar — necessário pra buscar aso_note_<i> no Firebase */
+    /* Preserva o índice original (_i) apenas para a migração de registros antigos */
     let list=recsArr.map((r,i)=>({...r,_i:i}));
     if(filter==="critical")list=list.filter(r=>parseDate(r.dataAso)&&daysUntil(nextDue(r.dataAso))<=2);
     else if(filter==="warning")list=list.filter(r=>parseDate(r.dataAso)&&daysUntil(nextDue(r.dataAso))<=7);
     else if(filter==="month")list=list.filter(r=>parseDate(r.dataAso)&&daysUntil(nextDue(r.dataAso))<=30);
     else if(filter==="ok")list=list.filter(r=>parseDate(r.dataAso)&&daysUntil(nextDue(r.dataAso))>30);
-    else if(filter==="notes")list=list.filter(r=>noteToText(r._i).length>0);
+    else if(filter==="notes")list=list.filter(r=>noteToText(r,r._i).length>0);
     else if(filter==="dateRange"){
       if(expDateFrom){const df=parseDate(fromISO(expDateFrom));if(df)list=list.filter(r=>{const d=parseDate(r.dataAso);return d&&d>=df})}
       if(expDateTo){const dt=parseDate(fromISO(expDateTo));if(dt){dt.setHours(23,59,59);list=list.filter(r=>{const d=parseDate(r.dataAso);return d&&d<=dt})}}
@@ -2133,7 +2198,7 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
       else if(d<=7)status="ATENÇÃO ("+d+"d)";
       else if(d<=30)status="NO MÊS ("+d+"d)";
       else status="OK ("+d+"d)";
-      const anotacao=noteToText(r._i);
+      const anotacao=noteToText(r,r._i);
       return{
         "Nome":r.nome||"",
         "Profissão":r.profissao||"",
@@ -2141,17 +2206,17 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
         "Próx. Vencimento":dataOk?nextDue(r.dataAso):"",
         "Dias até vencer":dataOk?d:"",
         "Status":status,
-        "Anotações (Prancheta)":anotacao,
+        "Informações do Colaborador":anotacao,
       };
     });
 
-    const ws=XLSX.utils.json_to_sheet(rows,{header:["Nome","Profissão","Data ASO","Próx. Vencimento","Dias até vencer","Status","Anotações (Prancheta)"]});
+    const ws=XLSX.utils.json_to_sheet(rows,{header:["Nome","Profissão","Data ASO","Próx. Vencimento","Dias até vencer","Status","Informações do Colaborador"]});
     ws["!cols"]=[{wch:32},{wch:22},{wch:14},{wch:18},{wch:14},{wch:18},{wch:60}];
     /* Habilita quebra de linha + alinhamento ao topo na coluna G (Anotações) e ajusta altura das linhas com nota */
     const lastRow=rows.length+1; /* +1 pelo cabeçalho */
     ws["!rows"]=[];
     rows.forEach((r,i)=>{
-      const txt=r["Anotações (Prancheta)"]||"";
+      const txt=r["Informações do Colaborador"]||"";
       if(txt){
         const lines=txt.split("\n").length;
         /* Estima altura: ~15pt por linha visual, considera também quebras automáticas em colunas largas */
@@ -2173,8 +2238,8 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
     ws["!views"]=[{state:"frozen",ySplit:1,xSplit:0,topLeftCell:"A2",activePane:"bottomLeft"}];
 
     /* Aba de metadados: ajuda a auditar exports */
-    const totalComNota=recsArr.reduce((acc,_r,i)=>acc+(noteToText(i)?1:0),0);
-    const fLabelMap={all:"Todos",critical:"Críticos",warning:"Atenção",month:"No mês (≤30d)",ok:"OK (>30d)",notes:"Com prancheta preenchida",dateRange:"Por data: "+(expDateFrom?fromISO(expDateFrom):"...")+" até "+(expDateTo?fromISO(expDateTo):"...")};
+    const totalComNota=recsArr.reduce((acc,r,i)=>acc+(noteToText(r,i)?1:0),0);
+    const fLabelMap={all:"Todos",critical:"Críticos",warning:"Atenção",month:"No mês (≤30d)",ok:"OK (>30d)",notes:"Com informações preenchidas",dateRange:"Por data: "+(expDateFrom?fromISO(expDateFrom):"...")+" até "+(expDateTo?fromISO(expDateTo):"...")};
     const metaRows=[
       ["Sistema","ASO CONTROLA!"],
       ["Exportado em",fmtNow()],
@@ -2182,7 +2247,7 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
       ["Filtro aplicado",fLabelMap[filter]||"Todos"],
       ["Total de registros exportados",rows.length],
       ["Total no sistema",recsArr.length],
-      ["Pranchetas preenchidas no sistema",totalComNota],
+      ["Informações preenchidas no sistema",totalComNota],
       ["","",],
       ["— Distribuição por status —",""],
       ["Vencidos",recsArr.filter(r=>parseDate(r.dataAso)&&daysUntil(nextDue(r.dataAso))<0).length],
@@ -2192,20 +2257,20 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
       ["OK (>30d)",recsArr.filter(r=>parseDate(r.dataAso)&&daysUntil(nextDue(r.dataAso))>30).length],
       ["Sem data válida",recsArr.filter(r=>!parseDate(r.dataAso)).length],
       ["","",],
-      ["— Dica para visualizar Anotações —",""],
-      ["1) Selecione a coluna G (Anotações)",""],
+      ["— Dica para visualizar Informações —",""],
+      ["1) Selecione a coluna G (Informações)",""],
       ["2) Aba Página Inicial → Quebrar Texto Automaticamente",""],
-      ["3) As quebras de linha das pranchetas vão aparecer corretamente",""],
+      ["3) As quebras de linha das informações vão aparecer corretamente",""],
     ];
     const wsMeta=XLSX.utils.aoa_to_sheet(metaRows);
     wsMeta["!cols"]=[{wch:34},{wch:28}];
 
     const wb=XLSX.utils.book_new();
-    const sheetName={all:"Todos",critical:"Críticos",warning:"Atenção",month:"No mês",ok:"OK",notes:"Com prancheta",dateRange:"Por data"}[filter]||"ASOs";
+    const sheetName={all:"Todos",critical:"Críticos",warning:"Atenção",month:"No mês",ok:"OK",notes:"Com informações",dateRange:"Por data"}[filter]||"ASOs";
     XLSX.utils.book_append_sheet(wb,ws,sheetName);
     XLSX.utils.book_append_sheet(wb,wsMeta,"Informações");
 
-    const fLabel={all:"completo",critical:"criticos",warning:"atencao",month:"no-mes",ok:"ok",notes:"com-prancheta",dateRange:"por-data"}[filter]||"completo";
+    const fLabel={all:"completo",critical:"criticos",warning:"atencao",month:"no-mes",ok:"ok",notes:"com-informacoes",dateRange:"por-data"}[filter]||"completo";
     const today=new Date().toISOString().slice(0,10);
     XLSX.writeFile(wb,"aso_controla_"+fLabel+"_"+today+".xlsx");
     addLog("EXPORTOU PLANILHA",currentUser,rows.length+" registros ("+fLabel+") em XLSX");
@@ -2221,10 +2286,10 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
     if(filterName){const fn=norm(filterName);list=list.filter(r=>norm(r.nome)===fn)}
     if(dateFrom){const df=parseDate(fromISO(dateFrom));if(df){list=list.filter(r=>{const d=parseDate(r.dataAso);return d&&d>=df})}}
     if(dateTo){const dt=parseDate(fromISO(dateTo));if(dt){dt.setHours(23,59,59);list=list.filter(r=>{const d=parseDate(r.dataAso);return d&&d<=dt})}}
-    /* Filtro de pranchetas preenchidas: quando ativo, mostra apenas registros que têm anotação E ignora o filtro de situação (view), permitindo acesso independente do status */
+    /* Filtro de informações preenchidas: mostra apenas colaboradores com texto cadastrado, independente do status */
     if(onlyWithNotes){
       list=list.filter(r=>{
-        const n=(notesMap&&notesMap[r._i])||localStorage.getItem("aso_note_"+r._i);
+        const n=getRecordNoteHtml(r,r._i);
         return n&&n.replace(/<[^>]*>/g,"").trim().length>0
       });
     }else{
@@ -2264,10 +2329,10 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
     if(!inNome.trim()||!inDAso.trim())return;
     if(!(await askPin("Adicionar novo registro: "+inNome.trim())))return;
     if(recsArr.length>0){
-      setConflictModal({type:"inline",newRecs:[{nome:inNome.trim(),profissao:inProf.trim(),dataAso:inDAso.trim(),foto:""}],existingRecs:recsArr});
+      setConflictModal({type:"inline",newRecs:[{nome:inNome.trim(),profissao:inProf.trim(),dataAso:inDAso.trim(),foto:"",recordId:createRecordId()}],existingRecs:recsArr});
       return;
     }
-    dbSet("records",[{nome:inNome.trim(),profissao:inProf.trim(),dataAso:inDAso.trim(),foto:""}]);
+    dbSet("records",[{nome:inNome.trim(),profissao:inProf.trim(),dataAso:inDAso.trim(),foto:"",recordId:createRecordId()}]);
     markInit();
     addLog("ADICIONOU REGISTRO",currentUser,inNome.trim()+" — "+inDAso.trim());
     setInNome("");setInProf("");setInDAso("");
@@ -2419,7 +2484,7 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
   };
 
   const handleRowMultiClick=(e,idx)=>{
-    /* Cliques em botões, checkbox, prancheta, edição etc. não contam como clique na linha. */
+    /* Cliques no nome, botões, checkbox, edição etc. não contam como clique na linha. */
     if(e.target.closest("button,input,select,textarea,a,[contenteditable='true']"))return;
     const previous=rowClickRef.current[idx]||{count:0,timer:null};
     previous.count+=1;
@@ -2618,11 +2683,11 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
               </button>
             :<span style={{fontSize:11,color:t.muted+"66",fontStyle:"italic"}}>Sem filtros ativos</span>}
 
-            {/* FILTRO DE PRANCHETAS PREENCHIDAS — toggle aceso/apagado, acessível a qualquer usuário (operacional e sênior); quando ativo, mostra TODAS as pranchetas independente do status (crítico/atenção/regular) */}
-            {(()=>{const totalNotes=recsArr.reduce((acc,_r,i)=>{const n=(notesMap&&notesMap[i])||localStorage.getItem("aso_note_"+i);return acc+(n&&n.replace(/<[^>]*>/g,"").trim().length>0?1:0)},0);return(
+            {/* FILTRO DE INFORMAÇÕES PREENCHIDAS — acessível a qualquer usuário */}
+            {(()=>{const totalNotes=recsArr.reduce((acc,r,i)=>{const n=getRecordNoteHtml(r,i);return acc+(n&&n.replace(/<[^>]*>/g,"").trim().length>0?1:0)},0);return(
               <button
                 onClick={()=>setOnlyWithNotes(v=>!v)}
-                title={onlyWithNotes?"Filtro ATIVO — clique para desligar":"Mostrar apenas registros com prancheta preenchida (independente da situação)"}
+                title={onlyWithNotes?"Filtro ATIVO — clique para desligar":"Mostrar apenas colaboradores com informações preenchidas"}
                 style={{
                   display:"flex",alignItems:"center",gap:8,
                   padding:"6px 12px",borderRadius:10,cursor:"pointer",
@@ -2646,7 +2711,7 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
                   <line x1="5" y1="21" x2="14" y2="21" stroke="#fbbf24" strokeWidth="0.8"/>
                   {onlyWithNotes&&<path d="M11 10.2 C11 10.2 8.2 7.8 7 9.3 C5.8 10.8 8 12.5 11 14.5 C14 12.5 16.2 10.8 15 9.3 C13.8 7.8 11 10.2 11 10.2Z" fill="#f43f5e" stroke="#be123c" strokeWidth="0.6"/>}
                 </svg>
-                <span className="btn-label">{onlyWithNotes?"Só pranchetas":"Pranchetas"}</span>
+                <span className="btn-label">{onlyWithNotes?"Só com informações":"Informações"}</span>
                 <span style={{
                   fontSize:10,fontWeight:800,
                   background:onlyWithNotes?"#b45309":t.border,
@@ -2680,13 +2745,13 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
               <div style={{position:"fixed",inset:0,zIndex:9998}} onClick={()=>setShowExportMenu(false)}/>
               <div style={{position:"fixed",top:exportMenuPos.top,left:exportMenuPos.left,background:t.card,border:"1px solid "+t.border,borderRadius:10,padding:4,zIndex:9999,boxShadow:"0 10px 30px rgba(0,0,0,0.4)",width:280}}>
                 <div style={{padding:"8px 12px 6px",fontSize:10,fontWeight:800,color:t.muted,textTransform:"uppercase",letterSpacing:1,borderBottom:"1px solid "+t.border+"66",marginBottom:4}}>📊 Exportar para Excel</div>
-                {(()=>{const totalNotesExp=recsArr.reduce((acc,_r,i)=>acc+(noteToText(i)?1:0),0);return[
+                {(()=>{const totalNotesExp=recsArr.reduce((acc,r,i)=>acc+(noteToText(r,i)?1:0),0);return[
                   ["all","Tudo","📋","#8b5cf6",recsArr.length],
                   ["critical","Críticos (≤2 dias)","🚨","#ef4444",stats.c],
                   ["warning","Atenção (≤7 dias)","⚠️","#f59e0b",stats.w],
                   ["month","No mês (≤30 dias)","📅","#3b82f6",stats.m],
                   ["ok","OK (>30 dias)","✅","#22c55e",stats.o],
-                  ["notes","Com prancheta preenchida","📝","#b45309",totalNotesExp]
+                  ["notes","Com informações preenchidas","📝","#2563eb",totalNotesExp]
                 ]})().map(([f,lab,emo,col,n])=>(
                   <button key={f} onClick={()=>{if(n>0){exportXLSX(f);setShowExportMenu(false)}}}
                     disabled={n===0}
@@ -2736,7 +2801,7 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
                     );
                   })()}
                 </div>
-                <div style={{padding:"6px 12px 4px",fontSize:10,color:t.muted,borderTop:"1px solid "+t.border+"66",marginTop:4,fontStyle:"italic"}}>📝 Todas as exportações incluem a coluna <strong style={{color:"#b45309"}}>Anotações (Prancheta)</strong></div>
+                <div style={{padding:"6px 12px 4px",fontSize:10,color:t.muted,borderTop:"1px solid "+t.border+"66",marginTop:4,fontStyle:"italic"}}>📝 Todas as exportações incluem a coluna <strong style={{color:"#2563eb"}}>Informações do Colaborador</strong></div>
               </div>
             </>}
             <button onClick={toggleFullscreen} title={isFullscreen?"Sair da tela cheia":"Tela cheia"} style={bs(t.input,t.text)}><Ico t={isFullscreen?"minimize":"maximize"} sz={16}/></button>
@@ -2753,7 +2818,7 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
           <span style={{fontSize:12,color:t.muted}}>Filtros:</span>
           {filterName&&<span style={{fontSize:13,fontWeight:600,color:t.accent,background:t.accent+"18",padding:"4px 12px",borderRadius:20,display:"inline-flex",alignItems:"center",gap:6}}><Ico t="user" sz={12}/>{filterName}<button onClick={()=>{setFilterName("");setNameSearch("")}} style={{background:"none",border:"none",color:t.accent,cursor:"pointer",padding:0,display:"flex"}}><Ico t="x" sz={14}/></button></span>}
           {(dateFrom||dateTo)&&<span style={{fontSize:13,fontWeight:600,color:"#d97706",background:"rgba(217,119,6,0.12)",padding:"4px 12px",borderRadius:20,display:"inline-flex",alignItems:"center",gap:6}}><Ico t="calendar" sz={12}/>{dateFrom?fromISO(dateFrom):"..."} → {dateTo?fromISO(dateTo):"..."}<button onClick={()=>{setDateFrom("");setDateTo("")}} style={{background:"none",border:"none",color:"#d97706",cursor:"pointer",padding:0,display:"flex"}}><Ico t="x" sz={14}/></button></span>}
-          {onlyWithNotes&&<span style={{fontSize:13,fontWeight:700,color:"#78350f",background:"linear-gradient(135deg,#fef08a,#f5c518)",padding:"4px 12px",borderRadius:20,display:"inline-flex",alignItems:"center",gap:6,border:"1px solid #b45309"}}>📋 Só com prancheta preenchida<button onClick={()=>setOnlyWithNotes(false)} style={{background:"none",border:"none",color:"#78350f",cursor:"pointer",padding:0,display:"flex"}}><Ico t="x" sz={14}/></button></span>}
+          {onlyWithNotes&&<span style={{fontSize:13,fontWeight:700,color:"#78350f",background:"linear-gradient(135deg,#fef08a,#f5c518)",padding:"4px 12px",borderRadius:20,display:"inline-flex",alignItems:"center",gap:6,border:"1px solid #b45309"}}>📝 Só com informações preenchidas<button onClick={()=>setOnlyWithNotes(false)} style={{background:"none",border:"none",color:"#78350f",cursor:"pointer",padding:0,display:"flex"}}><Ico t="x" sz={14}/></button></span>}
         </div>}
 
         {/* IMPORT WARNING MODAL */}
@@ -2955,30 +3020,30 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
                     onMouseOut={e=>{e.currentTarget.style.background=redOn?redBg:normalBg}}
                   >
                     <td style={{padding:"8px 10px",textAlign:"center"}}><input type="checkbox" checked={sel.has(r._i)} onChange={()=>{const ns=new Set(sel);ns.has(r._i)?ns.delete(r._i):ns.add(r._i);setSel(ns)}} style={{accentColor:t.accent,width:16,height:16}}/></td>
-                    <td style={{padding:"8px 12px",fontWeight:600,fontSize:14}}>{r.nome}</td>
+                    <td style={{padding:"8px 12px",fontWeight:600,fontSize:14}}>
+                      <button
+                        onClick={()=>setNoteRec({key:recordNoteKey(r,r._i),nome:r.nome})}
+                        title="Clique uma vez para abrir as informações deste colaborador"
+                        style={{background:"none",border:"none",padding:0,color:t.accent,fontWeight:700,fontSize:14,textAlign:"left",cursor:"pointer",textDecoration:getRecordNoteHtml(r,r._i)?"underline":"none",textUnderlineOffset:3}}
+                        onMouseOver={e=>e.currentTarget.style.textDecoration="underline"}
+                        onMouseOut={e=>e.currentTarget.style.textDecoration=getRecordNoteHtml(r,r._i)?"underline":"none"}>
+                        <span style={{display:"inline-flex",alignItems:"center",gap:4}}>
+                          <span>{r.nome}</span>
+                          {getRecordNoteHtml(r,r._i)&&<span title="Este colaborador possui informações cadastradas" aria-label="Possui informações cadastradas" style={{display:"inline-flex",alignItems:"center",justifyContent:"center",width:11,height:11,flexShrink:0,verticalAlign:"middle"}}>
+                            <svg width="11" height="11" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                              <path d="M6 1.1L11 10.2H1L6 1.1Z" fill="#fbbf24" stroke="#b45309" strokeWidth="0.8" strokeLinejoin="round"/>
+                              <path d="M6 4V7" stroke="#78350f" strokeWidth="1.1" strokeLinecap="round"/>
+                              <circle cx="6" cy="8.7" r="0.65" fill="#78350f"/>
+                            </svg>
+                          </span>}
+                        </span>
+                      </button>
+                    </td>
                     <td className="col-prof" style={{padding:"8px 12px",fontSize:14,color:t.muted}}>{r.profissao}</td>
                     <td style={{padding:"8px 12px",fontSize:14,fontFamily:"monospace"}}>{normDate(r.dataAso)}</td>
                     <td style={{padding:"8px 12px",fontSize:14,fontFamily:"monospace",fontWeight:700,color:"#a78bfa"}}>{nextDue(r.dataAso)||"—"}</td>
                     <td style={{padding:"8px 10px",textAlign:"center"}}><span style={{display:"inline-block",padding:"4px 10px",borderRadius:20,fontSize:11,fontWeight:700,background:sc.bg,color:sc.color,border:"1px solid "+sc.color+"33"}}>{sc.label}</span></td>
-                    <td style={{padding:"8px 6px",textAlign:"center",whiteSpace:"nowrap"}}><button onClick={()=>setNoteRec({idx:r._i,nome:r.nome})} title="Anotações" style={{background:"none",border:"none",padding:2,borderRadius:6,opacity:((notesMap&&notesMap[r._i])||localStorage.getItem("aso_note_"+r._i))?"1":"0.45",transition:"all 0.2s",cursor:"pointer"}} onMouseOver={e=>{e.currentTarget.style.opacity="1";e.currentTarget.style.transform="scale(1.18)"}} onMouseOut={e=>{e.currentTarget.style.opacity=((notesMap&&notesMap[r._i])||localStorage.getItem("aso_note_"+r._i))?"1":"0.45";e.currentTarget.style.transform="scale(1)"}}>
-  <svg width="20" height="22" viewBox="0 0 22 26" fill="none" xmlns="http://www.w3.org/2000/svg">
-    {/* Clip */}
-    <rect x="7" y="0" width="8" height="5" rx="2" fill="#f5c518" stroke="#b45309" strokeWidth="1.1"/>
-    <rect x="8.5" y="1" width="5" height="3" rx="1.2" fill="#fef3c7"/>
-    <circle cx="11" cy="2.5" r="1" fill="#b45309"/>
-    {/* Corpo da prancheta */}
-    <rect x="2" y="3" width="18" height="22" rx="3" fill="#fef08a" stroke="#b45309" strokeWidth="1.4"/>
-    {/* Prendedor topo */}
-    <rect x="6" y="2" width="10" height="4" rx="2" fill="#f5c518" stroke="#b45309" strokeWidth="1.1"/>
-    {/* Linhas de pauta */}
-    <line x1="5" y1="12" x2="17" y2="12" stroke="#fbbf24" strokeWidth="0.8"/>
-    <line x1="5" y1="15" x2="17" y2="15" stroke="#fbbf24" strokeWidth="0.8"/>
-    <line x1="5" y1="18" x2="17" y2="18" stroke="#fbbf24" strokeWidth="0.8"/>
-    <line x1="5" y1="21" x2="14" y2="21" stroke="#fbbf24" strokeWidth="0.8"/>
-    {/* Coração desenhado */}
-    <path d="M11 10.2 C11 10.2 8.2 7.8 7 9.3 C5.8 10.8 8 12.5 11 14.5 C14 12.5 16.2 10.8 15 9.3 C13.8 7.8 11 10.2 11 10.2Z" fill="#f43f5e" stroke="#be123c" strokeWidth="0.6"/>
-  </svg>
-</button><button onClick={()=>startEdit(r._i)} style={{background:"none",border:"none",color:t.muted,padding:4,borderRadius:6}} onMouseOver={e=>e.currentTarget.style.color=t.accent} onMouseOut={e=>e.currentTarget.style.color=t.muted}><Ico t="edit" sz={15}/></button><button onClick={()=>setConfirmDelOne(r._i)} style={{background:"none",border:"none",color:t.muted,padding:4,borderRadius:6}} onMouseOver={e=>e.currentTarget.style.color="#ef4444"} onMouseOut={e=>e.currentTarget.style.color=t.muted}><Ico t="trash" sz={15}/></button></td>
+                    <td style={{padding:"8px 6px",textAlign:"center",whiteSpace:"nowrap"}}><button onClick={()=>startEdit(r._i)} title="Editar colaborador" style={{background:"none",border:"none",color:t.muted,padding:4,borderRadius:6}} onMouseOver={e=>e.currentTarget.style.color=t.accent} onMouseOut={e=>e.currentTarget.style.color=t.muted}><Ico t="edit" sz={15}/></button><button onClick={()=>setConfirmDelOne(r._i)} title="Excluir colaborador" style={{background:"none",border:"none",color:t.muted,padding:4,borderRadius:6}} onMouseOver={e=>e.currentTarget.style.color="#ef4444"} onMouseOut={e=>e.currentTarget.style.color=t.muted}><Ico t="trash" sz={15}/></button></td>
                   </tr>
                 )})}
               {/* INLINE ADD ROW */}
@@ -3011,12 +3076,12 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
         </>}
 
         {/* NOTE MODAL */}
-        {noteRec&&<NoteModal recName={noteRec.nome} recIdx={noteRec.idx} theme={t} onClose={()=>setNoteRec(null)} onNoteChange={bumpNoteVersion}
+        {noteRec&&<NoteModal recName={noteRec.nome} recKey={noteRec.key} theme={t} onClose={()=>setNoteRec(null)} onNoteChange={bumpNoteVersion}
           notesMap={notesMap}
-          onSaveNote={(idx,html)=>{
+          onSaveNote={(key,html)=>{
             const nm={...(notesMap||{})};
-            if(!html||html.replace(/<[^>]*>/g,"").trim().length===0){delete nm[idx];}
-            else{nm[idx]=html;}
+            if(!html||html.replace(/<[^>]*>/g,"").trim().length===0){delete nm[key];}
+            else{nm[key]=html;}
             dbSet("notes",Object.keys(nm).length>0?nm:null);
             setNotesMap(nm);
           }}
@@ -3073,262 +3138,139 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
   );
 }
 
-/* ===== NOTE MODAL (Prancheta amarela) ===== */
-function NoteModal({recName,recIdx,theme:t,onClose,onNoteChange,notesMap,onSaveNote}){
+/* ===== COLLABORATOR INFORMATION MODAL ===== */
+function NoteModal({recName,recKey,theme:t,onClose,onNoteChange,notesMap,onSaveNote}){
   const editorRef=useRef();
-  const STORAGE_KEY="aso_note_"+recIdx;
+  const STORAGE_KEY="aso_note_"+recKey;
   const[saveStatus,setSaveStatus]=useState("idle"); /* idle | saving | saved */
   const[confirmClear,setConfirmClear]=useState(false);
   const debounceRef=useRef(null);
   const idleTimerRef=useRef(null);
 
-  /* Cores da prancheta */
-  const CB="#f5c518"; /* amarelo clip */
-  const CP="#fef9c3"; /* amarelo claro papel */
-  const CL="#fde68a"; /* amarelo médio linhas */
-  const CT="#78350f"; /* marrom escuro texto/borda */
-  const CS="#92400e"; /* marrom médio separadores */
-
   useEffect(()=>{
-    /* Carrega do Firebase primeiro; se não tiver, tenta localStorage como fallback */
-    const saved=(notesMap&&notesMap[recIdx])||localStorage.getItem(STORAGE_KEY);
+    const saved=(notesMap&&notesMap[recKey])||localStorage.getItem(STORAGE_KEY);
     if(saved&&editorRef.current)editorRef.current.innerHTML=saved;
-  },[]);
+  },[recKey]);
 
-  /* Cleanup dos timers ao desmontar — também salva o estado atual ao fechar para garantir */
   useEffect(()=>()=>{
     if(debounceRef.current)clearTimeout(debounceRef.current);
     if(idleTimerRef.current)clearTimeout(idleTimerRef.current);
     if(editorRef.current){
       const html=editorRef.current.innerHTML;
       const isEmpty=!html||html.replace(/<[^>]*>/g,"").trim().length===0;
-      /* Salva no Firebase e também no localStorage como cache local */
-      if(onSaveNote)onSaveNote(recIdx,isEmpty?"":html);
+      if(onSaveNote)onSaveNote(recKey,isEmpty?"":html);
       if(isEmpty)localStorage.removeItem(STORAGE_KEY);
       else localStorage.setItem(STORAGE_KEY,html);
     }
-  },[]);
+  },[recKey]);
 
-  const exec=(cmd,val=null)=>{document.execCommand(cmd,false,val);editorRef.current?.focus();handleInput()};
-
-  /* AUTO-SAVE — chamado a cada onInput do editor.
-     1) Salva imediatamente no localStorage (é local, é rápido).
-     2) Mostra "Salvando..." imediatamente; após 800ms sem nova edição, vira "✓ Salvo automaticamente".
-     3) Notifica o componente pai (atualiza filtro/contador de pranchetas) com debounce de 800ms para não poluir. */
   const handleInput=()=>{
     if(!editorRef.current)return;
     const html=editorRef.current.innerHTML;
     const isEmpty=html.replace(/<[^>]*>/g,"").trim().length===0;
-    /* Salva no localStorage como cache imediato */
     if(isEmpty)localStorage.removeItem(STORAGE_KEY);
     else localStorage.setItem(STORAGE_KEY,html);
 
     setSaveStatus("saving");
     if(idleTimerRef.current)clearTimeout(idleTimerRef.current);
     idleTimerRef.current=setTimeout(()=>setSaveStatus("saved"),800);
-
     if(debounceRef.current)clearTimeout(debounceRef.current);
     debounceRef.current=setTimeout(()=>{
-      /* Persiste no Firebase após debounce */
-      if(onSaveNote)onSaveNote(recIdx,isEmpty?"":html);
+      if(onSaveNote)onSaveNote(recKey,isEmpty?"":html);
       if(onNoteChange)onNoteChange();
     },800);
   };
 
+  const exec=(cmd,val=null)=>{document.execCommand(cmd,false,val);editorRef.current?.focus();handleInput()};
   const clearNote=()=>{
     localStorage.removeItem(STORAGE_KEY);
-    if(onSaveNote)onSaveNote(recIdx,"");
+    if(onSaveNote)onSaveNote(recKey,"");
     if(editorRef.current)editorRef.current.innerHTML="";
-    setConfirmClear(false);
-    setSaveStatus("idle");
+    setConfirmClear(false);setSaveStatus("idle");
     if(onNoteChange)onNoteChange();
   };
-
   const printNote=()=>{
     const w=window.open("","_blank");
-    w.document.write(`<html><head><title>Anotação — ${recName}</title><style>body{font-family:'Segoe UI',sans-serif;padding:40px;background:#fef9c3;color:#78350f}h2{color:#92400e;border-bottom:2px solid #f5c518;padding-bottom:8px}hr{border-color:#fde68a}.content{background:#fffde7;padding:20px;border-radius:8px;border:1px solid #fde68a;line-height:1.7}</style></head><body><h2>📋 ${recName}</h2><div class="content">${editorRef.current?.innerHTML||""}</div></body></html>`);
+    w.document.write(`<html><head><title>Informações — ${recName}</title><style>body{font-family:'Segoe UI',sans-serif;padding:40px;color:#1f2937}h2{border-bottom:2px solid #cbd5e1;padding-bottom:10px}.content{padding:20px;border:1px solid #d1d5db;border-radius:8px;line-height:1.7}</style></head><body><h2>${recName}</h2><div class="content">${editorRef.current?.innerHTML||""}</div></body></html>`);
     w.document.close();w.print();
   };
-
   const insertBullet=(icon,label)=>{
     editorRef.current?.focus();
     document.execCommand("insertHTML",false,`<div style="margin:4px 0">${icon} ${label}&nbsp;</div>`);
     handleInput();
   };
 
-  const NURSE_BULLETS=[
-    {icon:"💉",label:"Vacina"},
-    {icon:"🩺",label:"Consulta"},
-    {icon:"👩‍⚕️",label:"Enfermagem"},
-    {icon:"🏥",label:"Internação"},
-    {icon:"💊",label:"Medicamento"},
-    {icon:"🩹",label:"Curativo"},
-    {icon:"🌡️",label:"Temperatura"},
-    {icon:"❤️‍🩹",label:"Cuidados"},
+  const BULLETS=[
+    {icon:"💉",label:"Vacina"},{icon:"🩺",label:"Consulta"},{icon:"👩‍⚕️",label:"Enfermagem"},{icon:"🏥",label:"Internação"},
+    {icon:"💊",label:"Medicamento"},{icon:"🩹",label:"Curativo"},{icon:"🌡️",label:"Temperatura"},{icon:"❤️‍🩹",label:"Cuidados"},
   ];
-
   const FONTS=["Segoe UI","Arial","Times New Roman","Georgia","Courier New","Verdana","Comic Sans MS","Trebuchet MS"];
   const SIZES=["12","14","16","18","20","22","24","28","32","36"];
-  const COLORS=["#78350f","#dc2626","#1d4ed8","#15803d","#7c3aed","#c2410c","#0369a1","#1a1a1a","#d97706","#0f766e","#be185d","#ffffff"];
-
+  const COLORS=[t.text,"#dc2626","#1d4ed8","#15803d","#7c3aed","#c2410c","#0369a1","#1a1a1a","#d97706","#0f766e","#be185d","#ffffff"];
   const toolBtn=(onClick,children,title)=>(
     <button title={title} onClick={onClick}
-      style={{background:"rgba(120,53,15,0.08)",border:"1px solid "+CS+"44",color:CT,padding:"4px 8px",borderRadius:6,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",minWidth:30,height:28,fontSize:12,fontWeight:600,transition:"all 0.15s"}}
-      onMouseOver={e=>{e.currentTarget.style.background=CB+"55";e.currentTarget.style.borderColor=CS}}
-      onMouseOut={e=>{e.currentTarget.style.background="rgba(120,53,15,0.08)";e.currentTarget.style.borderColor=CS+"44"}}>
+      style={{background:t.input,border:"1px solid "+t.border,color:t.text,padding:"4px 8px",borderRadius:6,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",minWidth:30,height:28,fontSize:12,fontWeight:600}}>
       {children}
     </button>
   );
-
-  const sep=<div style={{width:1,height:22,background:CS+"44",margin:"0 3px",alignSelf:"center"}}/>;
-
-  /* SVG da prancheta (clip no topo) */
-  const ClipboardClip=()=>(
-    <svg width="90" height="28" viewBox="0 0 90 28" style={{display:"block",margin:"0 auto",marginBottom:-2,position:"relative",zIndex:2}}>
-      <rect x="20" y="4" width="50" height="22" rx="6" fill={CB} stroke="#b45309" strokeWidth="1.5"/>
-      <rect x="34" y="0" width="22" height="14" rx="5" fill={CB} stroke="#b45309" strokeWidth="1.5"/>
-      <rect x="38" y="3" width="14" height="8" rx="3" fill="#fef3c7"/>
-      <circle cx="45" cy="7" r="2.5" fill="#b45309"/>
-    </svg>
-  );
+  const sep=<div style={{width:1,height:22,background:t.border,margin:"0 3px",alignSelf:"center"}}/>;
+  const hasText=(notesMap&&notesMap[recKey])||localStorage.getItem(STORAGE_KEY);
 
   return(
-    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.65)",zIndex:400,display:"flex",alignItems:"center",justifyContent:"center",padding:16}} onClick={onClose}>
-      <div className="fade-in" onClick={e=>e.stopPropagation()}
-        style={{width:"100%",maxWidth:680,maxHeight:"93vh",display:"flex",flexDirection:"column",filter:"drop-shadow(0 20px 50px rgba(0,0,0,0.5))"}}>
-
-        {/* Clip SVG no topo */}
-        <ClipboardClip/>
-
-        {/* Corpo da prancheta */}
-        <div style={{background:CP,borderRadius:"0 0 16px 16px",border:"2.5px solid #b45309",borderTop:"none",display:"flex",flexDirection:"column",overflow:"hidden",maxHeight:"calc(93vh - 28px)"}}>
-
-          {/* Faixa amarela escura com título */}
-          <div style={{background:"linear-gradient(135deg,#f59e0b,"+CB+")",padding:"10px 18px",display:"flex",alignItems:"center",gap:10,borderBottom:"2px solid #b45309",flexShrink:0}}>
-            <div style={{width:34,height:34,borderRadius:"50%",background:"#fffde7",border:"2px solid #b45309",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,flexShrink:0}}>📋</div>
-            <div style={{flex:1}}>
-              <div style={{fontWeight:800,fontSize:15,color:CT,letterSpacing:0.3}}>Anotações Clínicas</div>
-              <div style={{fontSize:12,color:CS,fontWeight:600}}>👩‍⚕️ {recName}</div>
-            </div>
-            {/* Indicador de auto-save — substitui o antigo botão Salvar */}
-            <span title="As anotações são salvas automaticamente enquanto você digita" style={{
-              display:"inline-flex",alignItems:"center",gap:6,
-              fontSize:12,fontWeight:700,
-              padding:"5px 12px",borderRadius:20,
-              background:saveStatus==="saving"?"rgba(245,158,11,0.18)":saveStatus==="saved"?"rgba(21,128,61,0.12)":"rgba(120,53,15,0.08)",
-              color:saveStatus==="saving"?"#b45309":saveStatus==="saved"?"#15803d":CS,
-              border:"1px solid "+(saveStatus==="saving"?"rgba(245,158,11,0.35)":saveStatus==="saved"?"#15803d44":CS+"33"),
-              transition:"all 0.2s",whiteSpace:"nowrap"
-            }}>
-              {saveStatus==="saving"?<><span style={{display:"inline-block",width:10,height:10,borderRadius:"50%",border:"2px solid #b45309",borderTopColor:"transparent",animation:"asoSpin 0.8s linear infinite"}}/>Salvando…</>
-              :saveStatus==="saved"?<>✓ Salvo automaticamente</>
-              :<>💾 Auto-salvamento ativo</>}
-            </span>
-            {((notesMap&&notesMap[recIdx])||localStorage.getItem(STORAGE_KEY))&&<button onClick={()=>setConfirmClear(true)} title="Limpar anotação (apaga a prancheta)" style={{background:"rgba(220,38,38,0.12)",border:"1px solid rgba(220,38,38,0.4)",color:"#b91c1c",padding:"5px 7px",borderRadius:7,cursor:"pointer",display:"flex",alignItems:"center"}}><Ico t="trash" sz={14}/></button>}
-            <button onClick={printNote} title="Imprimir" style={{background:"rgba(120,53,15,0.1)",border:"1px solid "+CS+"66",color:CT,padding:"5px 7px",borderRadius:7,cursor:"pointer",display:"flex",alignItems:"center"}}><Ico t="print" sz={14}/></button>
-            <button onClick={onClose} style={{background:"rgba(120,53,15,0.12)",border:"none",color:CT,padding:"5px 7px",borderRadius:7,cursor:"pointer",display:"flex",alignItems:"center"}}><Ico t="x" sz={18}/></button>
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.68)",zIndex:400,display:"flex",alignItems:"center",justifyContent:"center",padding:16}} onClick={onClose}>
+      <div className="fade-in" onClick={e=>e.stopPropagation()} style={{width:"100%",maxWidth:720,maxHeight:"93vh",background:t.card,border:"1px solid "+t.border,borderRadius:18,boxShadow:"0 24px 70px rgba(0,0,0,0.55)",display:"flex",flexDirection:"column",overflow:"hidden"}}>
+        <div style={{padding:"14px 18px",display:"flex",alignItems:"center",gap:12,borderBottom:"1px solid "+t.border,background:t.input,flexShrink:0}}>
+          <div style={{width:38,height:38,borderRadius:10,background:t.accent+"22",color:t.accent,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}><Ico t="user" sz={20}/></div>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{fontWeight:800,fontSize:15,color:t.text}}>Informações do Colaborador</div>
+            <div style={{fontSize:13,color:t.accent,fontWeight:700,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{recName}</div>
           </div>
-
-          {/* Toolbar de formatação */}
-          <div style={{padding:"7px 14px",borderBottom:"1.5px solid "+CL,background:"#fef3c7",display:"flex",flexWrap:"wrap",gap:5,alignItems:"center",flexShrink:0}}>
-            <select onChange={e=>exec("fontName",e.target.value)}
-              style={{padding:"3px 6px",borderRadius:6,border:"1px solid "+CS+"44",background:"#fffde7",color:CT,fontSize:12,cursor:"pointer",outline:"none",height:28}} title="Fonte">
-              {FONTS.map(f=><option key={f} value={f}>{f}</option>)}
-            </select>
-            <select onChange={e=>exec("fontSize",String([1,2,3,4,5,6,7][Math.min(6,Math.max(0,Math.round(parseInt(e.target.value)/6)))]))}
-              style={{padding:"3px 6px",borderRadius:6,border:"1px solid "+CS+"44",background:"#fffde7",color:CT,fontSize:12,cursor:"pointer",outline:"none",height:28,width:52}} title="Tamanho">
-              {SIZES.map(s=><option key={s} value={s}>{s}</option>)}
-            </select>
-            {sep}
-            {toolBtn(()=>exec("bold"),<b style={{fontSize:13}}>N</b>,"Negrito")}
-            {toolBtn(()=>exec("italic"),<i style={{fontSize:13}}>I</i>,"Itálico")}
-            {toolBtn(()=>exec("underline"),<u style={{fontSize:13}}>S</u>,"Sublinhado")}
-            {sep}
-            {toolBtn(()=>exec("justifyLeft"),<Ico t="alignL" sz={13}/>,"Esquerda")}
-            {toolBtn(()=>exec("justifyCenter"),<Ico t="alignC" sz={13}/>,"Centro")}
-            {toolBtn(()=>exec("justifyRight"),<Ico t="alignR" sz={13}/>,"Direita")}
-            {sep}
-            <div style={{display:"flex",alignItems:"center",gap:2}}>
-              <span style={{fontSize:10,color:CS,fontWeight:700}}>Cor:</span>
-              <div style={{display:"flex",gap:2,flexWrap:"wrap",maxWidth:120}}>
-                {COLORS.map(c=>(
-                  <div key={c} onClick={()=>exec("foreColor",c)}
-                    style={{width:15,height:15,borderRadius:3,background:c,cursor:"pointer",border:"1.5px solid "+CS+"55",transition:"transform 0.1s",flexShrink:0}}
-                    onMouseOver={e=>e.currentTarget.style.transform="scale(1.4)"}
-                    onMouseOut={e=>e.currentTarget.style.transform="scale(1)"}/>
-                ))}
-              </div>
-            </div>
-            {sep}
-            <select onChange={e=>{if(editorRef.current)editorRef.current.style.lineHeight=e.target.value}}
-              style={{padding:"3px 6px",borderRadius:6,border:"1px solid "+CS+"44",background:"#fffde7",color:CT,fontSize:12,cursor:"pointer",outline:"none",height:28,width:72}} title="Espaçamento">
-              <option value="1.2">Simples</option>
-              <option value="1.6" selected>Normal</option>
-              <option value="2">Duplo</option>
-              <option value="2.5">Amplo</option>
-            </select>
-            {sep}
-            {toolBtn(()=>exec("insertUnorderedList"),<span>• Lista</span>,"Lista")}
-            {toolBtn(()=>exec("insertOrderedList"),<span>1. Num.</span>,"Numerada")}
-          </div>
-
-          {/* Marcadores de enfermagem */}
-          <div style={{padding:"6px 14px",borderBottom:"1.5px solid "+CL,background:"#fef9c3",display:"flex",flexWrap:"wrap",gap:4,alignItems:"center",flexShrink:0}}>
-            <span style={{fontSize:9,fontWeight:800,color:CS,textTransform:"uppercase",letterSpacing:0.8,marginRight:4}}>Marcadores:</span>
-            {NURSE_BULLETS.map(({icon,label})=>(
-              <button key={icon} title={"Inserir: "+label} onClick={()=>insertBullet(icon,label)}
-                style={{background:"rgba(120,53,15,0.07)",border:"1px solid "+CS+"44",borderRadius:8,padding:"3px 9px",cursor:"pointer",fontSize:13,color:CT,transition:"all 0.15s",display:"flex",alignItems:"center",gap:3}}
-                onMouseOver={e=>{e.currentTarget.style.background=CB+"66";e.currentTarget.style.borderColor=CS}}
-                onMouseOut={e=>{e.currentTarget.style.background="rgba(120,53,15,0.07)";e.currentTarget.style.borderColor=CS+"44"}}>
-                {icon}<span style={{fontSize:10,color:CS,fontWeight:600}}>{label}</span>
-              </button>
-            ))}
-          </div>
-
-          {/* Área de escrita — papel amarelo com linhas */}
-          <div style={{flex:1,overflowY:"auto",background:"#fffde7",position:"relative"}}>
-            {/* Margem vermelha lateral esquerda */}
-            <div style={{position:"absolute",left:46,top:0,bottom:0,width:2,background:"rgba(239,68,68,0.35)",pointerEvents:"none",zIndex:1}}/>
-            <div
-              ref={editorRef}
-              contentEditable
-              suppressContentEditableWarning
-              spellCheck
-              onInput={handleInput}
-              onBlur={handleInput}
-              style={{
-                minHeight:280,
-                padding:"16px 24px 16px 60px",
-                outline:"none",
-                fontSize:14,
-                lineHeight:"32px",
-                color:CT,
-                fontFamily:"Segoe UI,sans-serif",
-                background:"repeating-linear-gradient(transparent,transparent 31px,#fde68a 31px,#fde68a 32px)",
-                backgroundAttachment:"local",
-                position:"relative",
-                zIndex:2,
-              }}
-              placeholder="Escreva suas anotações aqui..."
-            />
-          </div>
-
-          {/* Rodapé da prancheta */}
-          <div style={{padding:"7px 18px",borderTop:"1.5px solid "+CL,background:"#fef3c7",display:"flex",justifyContent:"space-between",alignItems:"center",flexShrink:0}}>
-            <span style={{fontSize:10,color:CS,fontWeight:600}}>👩‍⚕️ ASO CONTROLA — {recName}</span>
-            <span style={{fontSize:9,color:CS+"99"}}>Ctrl+B • Ctrl+I • Ctrl+U</span>
-          </div>
+          <span title="As informações são salvas automaticamente" style={{display:"inline-flex",alignItems:"center",gap:6,fontSize:11,fontWeight:700,padding:"5px 10px",borderRadius:20,background:saveStatus==="saving"?"rgba(245,158,11,0.14)":saveStatus==="saved"?"rgba(21,128,61,0.12)":t.card,color:saveStatus==="saving"?"#d97706":saveStatus==="saved"?"#16a34a":t.muted,border:"1px solid "+(saveStatus==="saving"?"rgba(245,158,11,0.35)":saveStatus==="saved"?"rgba(21,128,61,0.35)":t.border),whiteSpace:"nowrap"}}>
+            {saveStatus==="saving"?"Salvando…":saveStatus==="saved"?"✓ Salvo":"Auto-salvamento"}
+          </span>
+          {hasText&&<button onClick={()=>setConfirmClear(true)} title="Apagar informações" style={{background:"rgba(220,38,38,0.1)",border:"1px solid rgba(220,38,38,0.35)",color:"#ef4444",padding:"6px 8px",borderRadius:7,cursor:"pointer",display:"flex"}}><Ico t="trash" sz={14}/></button>}
+          <button onClick={printNote} title="Imprimir" style={{background:t.card,border:"1px solid "+t.border,color:t.text,padding:"6px 8px",borderRadius:7,cursor:"pointer",display:"flex"}}><Ico t="print" sz={14}/></button>
+          <button onClick={onClose} title="Fechar" style={{background:t.card,border:"1px solid "+t.border,color:t.text,padding:"6px 8px",borderRadius:7,cursor:"pointer",display:"flex"}}><Ico t="x" sz={17}/></button>
         </div>
 
-        {/* CONFIRM CLEAR NOTE */}
-        {confirmClear&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:500,display:"flex",alignItems:"center",justifyContent:"center",padding:20}} onClick={()=>setConfirmClear(false)}>
-          <div className="fade-in" onClick={e=>e.stopPropagation()} style={{background:"#fffde7",borderRadius:16,padding:26,maxWidth:380,width:"100%",border:"2px solid #b45309",boxShadow:"0 20px 50px rgba(0,0,0,0.4)"}}>
-            <h3 style={{color:"#b91c1c",margin:"0 0 12px",display:"flex",alignItems:"center",gap:8,fontSize:16}}>🗑️ Limpar anotação?</h3>
-            <p style={{color:"#78350f",fontSize:13,margin:"0 0 8px",lineHeight:1.5}}>A prancheta de <strong>{recName}</strong> será apagada e voltará a ficar vazia.</p>
-            <p style={{color:"#b91c1c",fontSize:12,margin:"0 0 20px",fontWeight:600}}>Esta ação não pode ser desfeita.</p>
+        <div style={{padding:"8px 14px",borderBottom:"1px solid "+t.border,background:t.card,display:"flex",flexWrap:"wrap",gap:5,alignItems:"center",flexShrink:0}}>
+          <select onChange={e=>exec("fontName",e.target.value)} style={{padding:"3px 6px",borderRadius:6,border:"1px solid "+t.border,background:t.input,color:t.text,fontSize:12,height:28}} title="Fonte">
+            {FONTS.map(f=><option key={f} value={f}>{f}</option>)}
+          </select>
+          <select onChange={e=>exec("fontSize",String([1,2,3,4,5,6,7][Math.min(6,Math.max(0,Math.round(parseInt(e.target.value)/6)))]))} style={{padding:"3px 6px",borderRadius:6,border:"1px solid "+t.border,background:t.input,color:t.text,fontSize:12,height:28,width:52}} title="Tamanho">
+            {SIZES.map(sz=><option key={sz} value={sz}>{sz}</option>)}
+          </select>
+          {sep}{toolBtn(()=>exec("bold"),<b>N</b>,"Negrito")}{toolBtn(()=>exec("italic"),<i>I</i>,"Itálico")}{toolBtn(()=>exec("underline"),<u>S</u>,"Sublinhado")}
+          {sep}{toolBtn(()=>exec("justifyLeft"),<Ico t="alignL" sz={13}/>,"Esquerda")}{toolBtn(()=>exec("justifyCenter"),<Ico t="alignC" sz={13}/>,"Centro")}{toolBtn(()=>exec("justifyRight"),<Ico t="alignR" sz={13}/>,"Direita")}
+          {sep}<span style={{fontSize:10,color:t.muted,fontWeight:700}}>Cor:</span>
+          <div style={{display:"flex",gap:3,flexWrap:"wrap",maxWidth:150}}>{COLORS.map(c=><div key={c} onClick={()=>exec("foreColor",c)} style={{width:16,height:16,borderRadius:3,background:c,cursor:"pointer",border:"1px solid "+t.border}}/>)}</div>
+          {sep}{toolBtn(()=>exec("insertUnorderedList"),<span>• Lista</span>,"Lista")}{toolBtn(()=>exec("insertOrderedList"),<span>1. Num.</span>,"Numerada")}
+        </div>
+
+        <div style={{padding:"7px 14px",borderBottom:"1px solid "+t.border,background:t.input,display:"flex",flexWrap:"wrap",gap:5,alignItems:"center",flexShrink:0}}>
+          <span style={{fontSize:9,fontWeight:800,color:t.muted,textTransform:"uppercase",letterSpacing:0.8,marginRight:4}}>Inserir:</span>
+          {BULLETS.map(({icon,label})=><button key={icon} title={"Inserir: "+label} onClick={()=>insertBullet(icon,label)} style={{background:t.card,border:"1px solid "+t.border,borderRadius:8,padding:"4px 9px",cursor:"pointer",fontSize:12,color:t.text,display:"flex",alignItems:"center",gap:4}}>{icon}<span style={{fontSize:10,color:t.muted,fontWeight:600}}>{label}</span></button>)}
+        </div>
+
+        <div style={{flex:1,overflowY:"auto",background:t.card,padding:14}}>
+          <div ref={editorRef} contentEditable suppressContentEditableWarning spellCheck onInput={handleInput} onBlur={handleInput}
+            style={{minHeight:300,padding:"18px 20px",outline:"none",fontSize:14,lineHeight:1.7,color:t.text,fontFamily:"Segoe UI,sans-serif",background:t.input,border:"1px solid "+t.border,borderRadius:12,whiteSpace:"pre-wrap"}}
+            placeholder="Digite aqui as informações deste colaborador..."/>
+        </div>
+
+        <div style={{padding:"9px 18px",borderTop:"1px solid "+t.border,background:t.input,display:"flex",justifyContent:"space-between",alignItems:"center",flexShrink:0}}>
+          <span style={{fontSize:10,color:t.muted,fontWeight:600}}>As informações ficam vinculadas permanentemente a {recName}</span>
+          <span style={{fontSize:9,color:t.muted}}>Ctrl+B • Ctrl+I • Ctrl+U</span>
+        </div>
+
+        {confirmClear&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.62)",zIndex:500,display:"flex",alignItems:"center",justifyContent:"center",padding:20}} onClick={()=>setConfirmClear(false)}>
+          <div className="fade-in" onClick={e=>e.stopPropagation()} style={{background:t.card,borderRadius:16,padding:26,maxWidth:390,width:"100%",border:"1px solid "+t.border,boxShadow:"0 20px 50px rgba(0,0,0,0.45)"}}>
+            <h3 style={{color:"#ef4444",margin:"0 0 12px",display:"flex",alignItems:"center",gap:8,fontSize:16}}>🗑️ Apagar informações?</h3>
+            <p style={{color:t.text,fontSize:13,margin:"0 0 8px",lineHeight:1.5}}>As informações de <strong>{recName}</strong> serão apagadas.</p>
+            <p style={{color:"#ef4444",fontSize:12,margin:"0 0 20px",fontWeight:600}}>Esta ação não pode ser desfeita.</p>
             <div style={{display:"flex",gap:10,justifyContent:"flex-end"}}>
-              <button onClick={()=>setConfirmClear(false)} style={{background:"rgba(120,53,15,0.1)",border:"1px solid "+CS+"66",color:CT,padding:"8px 16px",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13}}>Cancelar</button>
-              <button onClick={clearNote} style={{background:"#dc2626",border:"none",color:"#fff",padding:"8px 16px",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:13}}>🗑️ Limpar</button>
+              <button onClick={()=>setConfirmClear(false)} style={{background:t.input,border:"1px solid "+t.border,color:t.text,padding:"8px 16px",borderRadius:8,cursor:"pointer",fontWeight:600,fontSize:13}}>Cancelar</button>
+              <button onClick={clearNote} style={{background:"#dc2626",border:"none",color:"#fff",padding:"8px 16px",borderRadius:8,cursor:"pointer",fontWeight:700,fontSize:13}}>Apagar</button>
             </div>
           </div>
         </div>}
