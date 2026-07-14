@@ -32,6 +32,35 @@ select{-webkit-appearance:auto;appearance:auto}
 @keyframes slideRight{from{transform:translateX(100%)}to{transform:translateX(0)}}
 @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-8px)}75%{transform:translateX(8px)}}
 @keyframes asoSpin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+@keyframes rowRedGlow{
+  0%,100%{background:rgba(239,68,68,0.16);box-shadow:inset 0 0 10px rgba(239,68,68,0.35)}
+  50%{background:rgba(239,68,68,0.34);box-shadow:inset 0 0 22px rgba(255,23,68,0.78)}
+}
+@keyframes neonTicker{
+  0%{transform:translateX(0)}
+  100%{transform:translateX(-50%)}
+}
+@keyframes neonFlicker{
+  0%,18%,22%,25%,53%,57%,100%{opacity:1}
+  20%,24%,55%{opacity:0.82}
+}
+.row-red-light td{
+  animation:rowRedGlow 1.15s ease-in-out infinite!important;
+  border-top:1px solid rgba(255,23,68,0.75)!important;
+  border-bottom:1px solid rgba(255,23,68,0.75)!important;
+}
+.row-red-light td:first-child{border-left:3px solid #ff1744!important}
+.row-red-light td:last-child{border-right:3px solid #ff1744!important}
+.neon-marquee-wrap{display:flex;flex-direction:column;gap:2px;min-width:320px;max-width:430px;overflow:hidden}
+.neon-marquee{position:relative;overflow:hidden;width:100%;height:24px;border-radius:8px;background:linear-gradient(90deg,rgba(255,0,85,0.08),rgba(255,40,40,0.14),rgba(255,0,85,0.08));border:1px solid rgba(255,64,96,0.28);box-shadow:inset 0 0 8px rgba(255,32,96,0.15),0 0 12px rgba(255,32,96,0.08)}
+.neon-marquee-track{display:flex;width:max-content;min-width:200%;align-items:center;white-space:nowrap;animation:neonTicker 20s linear infinite;will-change:transform}
+.neon-marquee-text{display:inline-block;padding-right:36px;font-size:11px;font-weight:800;letter-spacing:0.8px;text-transform:uppercase;line-height:24px;color:#ffd7df;text-shadow:0 0 3px rgba(255,255,255,0.95),0 0 7px rgba(255,96,128,0.95),0 0 15px rgba(255,40,80,0.95),0 0 24px rgba(255,24,68,0.9);animation:neonFlicker 3.6s infinite}
+.siren-status-pill{align-self:flex-start;font-size:9px;font-weight:800;letter-spacing:0.9px;text-transform:uppercase;color:#ff7a91;background:rgba(255,23,68,0.10);border:1px solid rgba(255,23,68,0.24);padding:2px 8px;border-radius:999px;box-shadow:0 0 10px rgba(255,23,68,0.12)}
+.neon-settings-btn{width:30px;height:30px;border-radius:9px;display:flex;align-items:center;justify-content:center;flex-shrink:0;cursor:pointer;transition:transform .15s,box-shadow .15s}
+.neon-settings-btn:hover{transform:scale(1.08)}
+.neon-settings-panel{position:absolute;right:0;top:calc(100% + 9px);width:300px;border-radius:14px;padding:14px;z-index:420;box-shadow:0 18px 50px rgba(0,0,0,.52);backdrop-filter:blur(12px)}
+.neon-color-dot{width:25px;height:25px;border-radius:50%;cursor:pointer;transition:transform .15s,box-shadow .15s}
+.neon-color-dot:hover{transform:scale(1.13)}
 .fade-in{animation:fadeIn 0.3s ease-out}
 .banner-slide{animation:bannerSlide 0.4s ease-out}
 .avatar-pop{animation:avatarPop 0.3s ease-out}
@@ -54,9 +83,14 @@ select{-webkit-appearance:auto;appearance:auto}
   .header-left span{font-size:14px!important}
   .header-right{gap:6px!important}
   .header-right .theme-btn-text,.header-right .user-badge-text{display:none!important}
-  .siren-box{padding:3px 8px 3px 4px!important}
-  .siren-box .siren-text{display:none!important}
+  .siren-box{padding:4px 8px 4px 6px!important;max-width:240px!important}
   .siren-box svg{width:28px!important;height:28px!important}
+  .neon-marquee-wrap{min-width:0!important;max-width:190px!important}
+  .neon-marquee{height:22px!important}
+  .neon-marquee-text{font-size:9px!important;line-height:22px!important;padding-right:26px!important}
+  .siren-status-pill{font-size:8px!important;padding:2px 6px!important}
+  .neon-settings-btn{width:27px!important;height:27px!important}
+  .neon-settings-panel{position:fixed!important;left:12px!important;right:12px!important;top:72px!important;width:auto!important}
   .main-content{padding:14px!important;padding-bottom:env(safe-area-inset-bottom,14px)!important}
   .stats-grid{grid-template-columns:repeat(2,1fr)!important;gap:10px!important}
   .stats-grid button{padding:12px!important}
@@ -1725,6 +1759,46 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
   const[dateFrom,setDateFrom]=useState("");const[dateTo,setDateTo]=useState("");
   const[nome,setNome]=useState("");const[prof,setProf]=useState("");const[dAso,setDAso]=useState("");const[recFoto,setRecFoto]=useState("");
   const[sel,setSel]=useState(new Set());const[view,setView]=useState("all");
+  const[redRows,setRedRows]=useState(()=>{
+    try{return new Set(JSON.parse(localStorage.getItem("aso_red_rows")||"[]"))}
+    catch(e){return new Set()}
+  });
+  const rowLightKey=(r)=>[r._i,norm(r.nome),norm(r.profissao),normDate(r.dataAso)].join("|");
+  const isInteractiveRowTarget=(target)=>target instanceof Element&&!!target.closest("button,input,select,textarea,a,[contenteditable='true']");
+  const updateRedRow=(rowKey,active)=>{
+    setRedRows(prev=>{
+      const next=new Set(prev);
+      active?next.add(rowKey):next.delete(rowKey);
+      try{localStorage.setItem("aso_red_rows",JSON.stringify([...next]))}catch(e){}
+      return next;
+    });
+  };
+  const handleRowMultiClick=(e,rowKey)=>{
+    if(isInteractiveRowTarget(e.target))return;
+    if(e.detail===3){
+      e.preventDefault();
+      updateRedRow(rowKey,true);
+    }else if(e.detail===2){
+      e.preventDefault();
+      updateRedRow(rowKey,false);
+    }
+  };
+  const preventRowTextSelection=(e)=>{
+    if(e.detail>=2&&!isInteractiveRowTarget(e.target))e.preventDefault();
+  };
+
+  /* Configurações persistentes do letreiro neon */
+  const[neonColor,setNeonColor]=useState(()=>localStorage.getItem("aso_neon_color")||"#ff1744");
+  const[neonSpeed,setNeonSpeed]=useState(()=>{
+    const v=Number(localStorage.getItem("aso_neon_speed")||20);
+    return Number.isFinite(v)?Math.min(40,Math.max(8,v)):20;
+  });
+  const[showNeonSettings,setShowNeonSettings]=useState(false);
+  useEffect(()=>{try{localStorage.setItem("aso_neon_color",neonColor)}catch(e){}},[neonColor]);
+  useEffect(()=>{try{localStorage.setItem("aso_neon_speed",String(neonSpeed))}catch(e){}},[neonSpeed]);
+  const neonSpeedLabel=neonSpeed<=12?"Rápida":neonSpeed<=22?"Normal":neonSpeed<=31?"Lenta":"Muito lenta";
+  const resetNeon=()=>{setNeonColor("#ff1744");setNeonSpeed(20)};
+
   const[showPal,setShowPal]=useState(false);const[showDel,setShowDel]=useState(false);
   const[confirmDelOne,setConfirmDelOne]=useState(null);const[confirmDelSel,setConfirmDelSel]=useState(false);
   const[editRec,setEditRec]=useState(null);const[editData,setEditData]=useState({nome:"",profissao:"",dataAso:"",foto:""});
@@ -2425,12 +2499,58 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
           <GreetingBadge t={t}/>
         </div>
         <div className="header-right" style={{display:"flex",alignItems:"center",gap:10,flexWrap:"nowrap"}}>
-          <div className="siren-box" style={{display:"flex",alignItems:"center",gap:8,padding:"4px 14px 4px 8px",borderRadius:12,background:hasAlert?"rgba(255,23,68,0.08)":t.input,border:"1px solid "+(hasAlert?"rgba(255,23,68,0.2)":t.border),cursor:"pointer",transition:"all 0.3s",flexShrink:0}} onClick={()=>{if(hasAlert){setView("critical");setTab("dashboard");setTimeout(()=>tableRef.current?.scrollIntoView({behavior:"smooth",block:"start"}),100)}}}>
+          <div className="siren-box" title="Luz vermelha sobre toda a extensão do nome significa colaborador afastado" style={{display:"flex",alignItems:"center",gap:8,padding:"6px 10px 6px 8px",borderRadius:14,position:"relative",background:`linear-gradient(90deg,rgba(0,0,0,.82),${neonColor}20,rgba(0,0,0,.82))`,border:"1px solid "+neonColor+"66",cursor:hasAlert?"pointer":"default",transition:"all 0.3s",flexShrink:0,boxShadow:`0 0 18px ${neonColor}22, inset 0 0 14px rgba(0,0,0,.45)`}} onClick={()=>{if(hasAlert){setView("critical");setTab("dashboard");setTimeout(()=>tableRef.current?.scrollIntoView({behavior:"smooth",block:"start"}),100)}}}>
             <Siren active={hasAlert} size={36}/>
-            <div className="siren-text" style={{display:"flex",flexDirection:"column",lineHeight:1.2}}>
-              <span style={{fontSize:10,fontWeight:700,textTransform:"uppercase",color:hasAlert?"#ff1744":t.muted}}>{hasAlert?"ALERTA!":"Sem alertas"}</span>
-              <span style={{fontSize:11,color:hasAlert?"#ff5252":t.muted}}>{hasAlert?(stats.c+stats.w)+" vencendo":"Tudo em dia"}</span>
+            <div className="neon-marquee-wrap">
+              <span className="siren-status-pill" style={{color:neonColor,background:neonColor+"18",borderColor:neonColor+"55",boxShadow:`0 0 10px ${neonColor}33`}}>{hasAlert?`ALERTA • ${(stats.c+stats.w)} vencendo`:"LETREIRO INFORMATIVO"}</span>
+              <div className="neon-marquee" style={{background:`linear-gradient(90deg,rgba(0,0,0,.88),${neonColor}18,rgba(0,0,0,.88))`,borderColor:neonColor+"55",boxShadow:`inset 0 0 10px ${neonColor}22,0 0 12px ${neonColor}22`}}>
+                <div className="neon-marquee-track" style={{animationDuration:neonSpeed+"s"}}>
+                  <span className="neon-marquee-text" style={{color:"#fff",WebkitTextStroke:".2px rgba(255,255,255,.85)",textShadow:`0 0 3px #fff,0 0 8px ${neonColor},0 0 16px ${neonColor},0 0 25px ${neonColor}`}}>LUZ VERMELHA SOBRE TODA A EXTENSÃO DO NOME SIGNIFICA COLABORADOR AFASTADO</span>
+                  <span className="neon-marquee-text" style={{color:"#fff",WebkitTextStroke:".2px rgba(255,255,255,.85)",textShadow:`0 0 3px #fff,0 0 8px ${neonColor},0 0 16px ${neonColor},0 0 25px ${neonColor}`}}>LUZ VERMELHA SOBRE TODA A EXTENSÃO DO NOME SIGNIFICA COLABORADOR AFASTADO</span>
+                </div>
+              </div>
             </div>
+
+            <button className="neon-settings-btn" title="Mudar cor e velocidade do letreiro" onClick={e=>{e.stopPropagation();setShowNeonSettings(v=>!v)}} style={{border:"1px solid "+neonColor+"66",background:"rgba(0,0,0,.62)",color:neonColor,boxShadow:`0 0 10px ${neonColor}33`}}>
+              <Ico t="settings" sz={15}/>
+            </button>
+
+            {showNeonSettings&&<>
+              <div onClick={e=>{e.stopPropagation();setShowNeonSettings(false)}} style={{position:"fixed",inset:0,zIndex:410}}/>
+              <div className="neon-settings-panel fade-in" onClick={e=>e.stopPropagation()} style={{background:"rgba(10,18,32,.97)",border:"1px solid "+neonColor+"66",color:"#eef2ff"}}>
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,marginBottom:12}}>
+                  <div>
+                    <div style={{fontSize:13,fontWeight:800,color:"#fff"}}>Configurar letreiro</div>
+                    <div style={{fontSize:10,color:"#94a3b8",marginTop:2}}>A cor e a velocidade ficam salvas neste dispositivo.</div>
+                  </div>
+                  <button onClick={()=>setShowNeonSettings(false)} style={{background:"transparent",border:"none",color:"#94a3b8",padding:3,display:"flex"}}><Ico t="x" sz={17}/></button>
+                </div>
+
+                <div style={{marginBottom:14}}>
+                  <label style={{display:"block",fontSize:10,fontWeight:800,textTransform:"uppercase",letterSpacing:.8,color:"#94a3b8",marginBottom:7}}>Cor do neon</label>
+                  <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+                    {["#ff1744","#00e5ff","#39ff14","#ffd600","#ff00ff","#ff7a00","#ffffff"].map(c=><button key={c} className="neon-color-dot" onClick={()=>setNeonColor(c)} title={c} style={{background:c,border:neonColor===c?"3px solid #fff":"2px solid rgba(255,255,255,.35)",boxShadow:neonColor===c?`0 0 12px ${c}`:`0 0 7px ${c}88`}}/>)}
+                    <label title="Escolher outra cor" style={{width:31,height:31,borderRadius:8,overflow:"hidden",border:"1px solid rgba(255,255,255,.35)",cursor:"pointer",position:"relative",background:"conic-gradient(red,yellow,lime,aqua,blue,magenta,red)"}}>
+                      <input type="color" value={neonColor} onChange={e=>setNeonColor(e.target.value)} style={{position:"absolute",inset:-8,width:48,height:48,opacity:0,cursor:"pointer"}}/>
+                    </label>
+                  </div>
+                </div>
+
+                <div style={{marginBottom:12}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:7}}>
+                    <label style={{fontSize:10,fontWeight:800,textTransform:"uppercase",letterSpacing:.8,color:"#94a3b8"}}>Velocidade</label>
+                    <span style={{fontSize:11,fontWeight:800,color:neonColor}}>{neonSpeedLabel}</span>
+                  </div>
+                  <input type="range" min="8" max="40" step="1" value={neonSpeed} onChange={e=>setNeonSpeed(Number(e.target.value))} style={{width:"100%",accentColor:neonColor,cursor:"pointer"}}/>
+                  <div style={{display:"flex",justifyContent:"space-between",fontSize:9,color:"#64748b",marginTop:3}}><span>Mais rápida</span><span>Mais lenta</span></div>
+                </div>
+
+                <div style={{display:"flex",gap:8,justifyContent:"flex-end",borderTop:"1px solid rgba(148,163,184,.18)",paddingTop:11}}>
+                  <button onClick={resetNeon} style={{padding:"7px 11px",borderRadius:8,border:"1px solid rgba(148,163,184,.25)",background:"rgba(148,163,184,.08)",color:"#cbd5e1",fontSize:11,fontWeight:700}}>Restaurar padrão</button>
+                  <button onClick={()=>setShowNeonSettings(false)} style={{padding:"7px 13px",borderRadius:8,border:"none",background:neonColor,color:neonColor.toLowerCase()==="#ffffff"?"#111827":"#fff",fontSize:11,fontWeight:800,boxShadow:`0 0 12px ${neonColor}55`}}>Concluir</button>
+                </div>
+              </div>
+            </>}
           </div>
           <div style={{position:"relative"}}>
             <button onClick={()=>setShowPal(!showPal)} style={{...bs(t.input,t.text),border:"1px solid "+t.border,padding:"7px 12px"}}><Ico t="palette" sz={16}/><span className="theme-btn-text" style={{fontSize:12}}>{tn}</span></button>
@@ -2896,8 +3016,17 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
               </tr></thead>
               <tbody>
                 {filtered.length===0?<tr><td colSpan={7} style={{padding:40,textAlign:"center",color:t.muted}}><div style={{fontSize:36,marginBottom:8,opacity:0.3}}>📋</div><div style={{fontSize:14}}>Nenhum registro</div></td></tr>
-                :filtered.map((r,i)=>{const sc=statusColor(nextDue(r.dataAso));return(
-                  <tr key={r._i+"-"+i} style={{background:sel.has(r._i)?t.accent+"11":i%2===0?"transparent":t.input+"55",borderBottom:"1px solid "+t.border+"22",transition:"background 0.15s"}} onMouseOver={e=>e.currentTarget.style.background=t.accent+"0d"} onMouseOut={e=>e.currentTarget.style.background=sel.has(r._i)?t.accent+"11":i%2===0?"transparent":t.input+"55"}>
+                :filtered.map((r,i)=>{const sc=statusColor(nextDue(r.dataAso));const redKey=rowLightKey(r);const rowIsRed=redRows.has(redKey);return(
+                  <tr
+                    key={r._i+"-"+i}
+                    className={rowIsRed?"row-red-light":""}
+                    title="3 cliques: acender vermelho • 2 cliques: voltar ao normal"
+                    style={{background:sel.has(r._i)?t.accent+"11":i%2===0?"transparent":t.input+"55",borderBottom:"1px solid "+t.border+"22",transition:"background 0.15s",cursor:"default"}}
+                    onMouseDown={preventRowTextSelection}
+                    onClick={e=>handleRowMultiClick(e,redKey)}
+                    onMouseOver={e=>{if(!rowIsRed)e.currentTarget.style.background=t.accent+"0d"}}
+                    onMouseOut={e=>{if(!rowIsRed)e.currentTarget.style.background=sel.has(r._i)?t.accent+"11":i%2===0?"transparent":t.input+"55"}}
+                  >
                     <td style={{padding:"8px 10px",textAlign:"center"}}><input type="checkbox" checked={sel.has(r._i)} onChange={()=>{const ns=new Set(sel);ns.has(r._i)?ns.delete(r._i):ns.add(r._i);setSel(ns)}} style={{accentColor:t.accent,width:16,height:16}}/></td>
                     <td style={{padding:"8px 12px",fontWeight:600,fontSize:14}}>{r.nome}</td>
                     <td className="col-prof" style={{padding:"8px 12px",fontSize:14,color:t.muted}}>{r.profissao}</td>
