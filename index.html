@@ -952,7 +952,7 @@ function filterHistory(logs,{search="",user="",action="",from="",to=""}){
       &&(!query||norm([log.user,log.action,log.detail].join(" ")).includes(query));
   });
 }
-function LogPanel({t}){
+function LogPanel({t,currentUser,isSenior}){
   const[logsObj,setLogsObj]=useState({});
   const[loading,setLoading]=useState(true);
   const[error,setError]=useState("");
@@ -963,11 +963,11 @@ function LogPanel({t}){
   const[to,setTo]=useState("");
   const[page,setPage]=useState(1);
   useEffect(()=>{
-    const ref=db.ref("logs");
+    const ref=isSenior?db.ref("logs"):db.ref("logs").orderByChild("user").equalTo(currentUser);
     const receive=snapshot=>{setLogsObj(snapshot.val()||{});setLoading(false);setError("")};
     ref.on("value",receive,()=>{setError("Não foi possível carregar o histórico. Verifique sua conexão e permissão de acesso.");setLoading(false)});
     return()=>ref.off("value",receive);
-  },[]);
+  },[currentUser,isSenior]);
   useEffect(()=>setPage(1),[search,user,action,from,to]);
   const logs=useMemo(()=>Object.entries(logsObj||{}).filter(([,log])=>log&&typeof log==="object").map(([id,log])=>({...log,id})).sort((a,b)=>historyTimestamp(b)-historyTimestamp(a)),[logsObj]);
   const users=useMemo(()=>[...new Set(logs.map(log=>log.user).filter(Boolean))].sort((a,b)=>a.localeCompare(b,"pt-BR")),[logs]);
@@ -992,7 +992,7 @@ function LogPanel({t}){
   return(
     <section className="fade-in" aria-label="Histórico de uso">
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap",marginBottom:20}}>
-        <div><h2 style={{fontSize:22,color:t.text,marginBottom:6}}>Histórico de uso</h2><p style={{color:t.muted,fontSize:13}}>Acessos e atividades registrados na ferramenta. Atualização em tempo real.</p></div>
+        <div><h2 style={{fontSize:22,color:t.text,marginBottom:6}}>Histórico de uso</h2><p style={{color:t.muted,fontSize:13}}>{isSenior?"Acessos e atividades de todos os usuários. Atualização em tempo real.":"Seus acessos e atividades. Atualização em tempo real."}</p></div>
         <button type="button" onClick={exportHistory} disabled={loading||!!error||!filtered.length} style={buttonStyle}>Exportar Excel ({filtered.length})</button>
       </div>
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))",gap:12,marginBottom:16}}>
@@ -2540,9 +2540,9 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
 
   const navTabs=[
     {id:"dashboard",label:"Dashboard",icon:"list"},
+    {id:"logs",label:"Histórico de uso",icon:"activity"},
     ...(isSenior?[
       {id:"users",label:"Usuários",icon:"users"},
-      {id:"logs",label:"Histórico de uso",icon:"activity"},
       {id:"backups",label:"Backups",icon:"shield"},
     ]:[]),
   ];
@@ -2579,11 +2579,11 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
       </header>
 
       {/* NAV TABS */}
-      {isSenior&&<div className="nav-tabs-bar" style={{background:t.card+"cc",borderBottom:"1px solid "+t.border,padding:"0 24px",display:"flex",gap:0,position:"sticky",top:56,zIndex:99}}>
+      <div className="nav-tabs-bar" style={{background:t.card+"cc",borderBottom:"1px solid "+t.border,padding:"0 24px",display:"flex",gap:0,position:"sticky",top:56,zIndex:99}}>
         {navTabs.map(nt=>(
           <button key={nt.id} onClick={()=>setTab(nt.id)} style={{padding:"12px 20px",border:"none",borderBottom:"3px solid "+(tab===nt.id?t.accent:"transparent"),background:"transparent",color:tab===nt.id?t.accent:t.muted,fontWeight:tab===nt.id?700:500,fontSize:13,display:"flex",alignItems:"center",gap:6,transition:"all 0.2s",cursor:"pointer"}}><Ico t={nt.icon} sz={15}/>{nt.label}</button>
         ))}
-      </div>}
+      </div>
 
       <main className="main-content" style={{maxWidth:1100,margin:"0 auto",padding:24}}>
 
@@ -2628,7 +2628,7 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
         </div>}
 
         {tab==="users"&&isSenior&&<UsersPanel t={t} currentUser={currentUser} userRole={userRole}/>}
-        {tab==="logs"&&isSenior&&<LogPanel t={t}/>}
+        {tab==="logs"&&<LogPanel t={t} currentUser={currentUser} isSenior={isSenior}/>}
         {tab==="backups"&&isSenior&&<BackupPanel t={t} currentUser={currentUser}/>}
 
         {tab==="dashboard"&&<>
