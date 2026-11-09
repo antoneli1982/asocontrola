@@ -3328,5 +3328,31 @@ if('serviceWorker' in navigator){
   });
 }
 </script>
+
+<!-- Shutdown notice: kept outside React and print templates. -->
+<style>
+#shutdown-notice{margin:auto;width:calc(100% - 32px);max-width:500px;padding:32px 24px 24px;border:2px solid #fbbf24;border-radius:16px;background:#112240;color:#fff;box-shadow:0 20px 60px #0008;font-family:'Segoe UI',sans-serif}
+#shutdown-notice::backdrop{background:rgba(0,0,0,.72)}
+#shutdown-notice h2{padding-right:32px;margin:0 0 18px;color:#fbbf24;font-size:21px}
+#shutdown-notice p{margin:0;font-size:17px;font-weight:700;line-height:1.65}
+#shutdown-notice-close{position:absolute;right:8px;top:8px;width:44px;height:44px;border:0;border-radius:8px;background:transparent;color:#fff;font-size:30px;cursor:pointer}
+#shutdown-notice-close:focus-visible{outline:2px solid #fbbf24}
+</style>
+<dialog id="shutdown-notice" aria-labelledby="shutdown-notice-title" aria-describedby="shutdown-notice-message">
+  <button id="shutdown-notice-close" type="button" aria-label="Fechar aviso" autofocus>&times;</button>
+  <h2 id="shutdown-notice-title">Aviso de desativação</h2>
+  <p id="shutdown-notice-message">A FERRAMENTA SERÁ DESATIVADA ATÉ O DIA 01/12/2026, SALVE TODOS OS DADOS</p>
+</dialog>
+<script>
+(() => {
+  const notice = document.getElementById('shutdown-notice');
+  const showNotice = () => {
+    if (!document.hidden && !notice.open) notice.showModal();
+  };
+  document.getElementById('shutdown-notice-close').addEventListener('click', () => notice.close());
+  showNotice();
+  setInterval(showNotice, 40000);
+})();
+</script>
 </body>
 </html>
