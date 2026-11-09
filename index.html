@@ -935,74 +935,95 @@ function UsersPanel({t,currentUser,userRole}){
 }
 
 /* ===== ACTIVITY LOG (Senior only) ===== */
-function LogPanel({t}){
-  const[logsObj,,loading]=useFirebase("logs",{});
-  const[search,setSearch]=useState("");
-  const[filter,setFilter]=useState("all");
-
-  /* Convert Firebase object to sorted array (newest first) */
-  const logs=useMemo(()=>{
-    if(!logsObj)return[];
-    return Object.values(logsObj).sort((a,b)=>(b.timestamp||0)-(a.timestamp||0));
-  },[logsObj]);
-
-  const filtered=logs.filter(l=>{
-    if(filter!=="all"&&!l.action.toLowerCase().includes(filter))return false;
-    if(search){const q=search.toLowerCase();return l.user.toLowerCase().includes(q)||l.detail.toLowerCase().includes(q)||l.action.toLowerCase().includes(q)}
-    return true;
+function historyTimestamp(log){
+  const timestamp=Number(log.timestamp);
+  if(Number.isFinite(timestamp)&&timestamp>0)return timestamp;
+  const match=String(log.ts||"").match(/^(\d{2})\/(\d{2})\/(\d{4})\s+(\d{2}):(\d{2})(?::(\d{2}))?/);
+  return match?new Date(+match[3],+match[2]-1,+match[1],+match[4],+match[5],+(match[6]||0)).getTime():0;
+}
+function filterHistory(logs,{search="",user="",action="",from="",to=""}){
+  const start=from?new Date(from+"T00:00:00").getTime():null;
+  const end=to?new Date(to+"T23:59:59.999").getTime():null;
+  const query=norm(search);
+  return logs.filter(log=>{
+    const timestamp=historyTimestamp(log);
+    return (!user||log.user===user)&&(!action||log.action===action)
+      &&(start===null||timestamp>=start)&&(end===null||timestamp<=end)
+      &&(!query||norm([log.user,log.action,log.detail].join(" ")).includes(query));
   });
-
-  const actionColor=(a)=>{
-    if(a.includes("EXCLU")||a.includes("LIMP"))return"#ef4444";
-    if(a.includes("LOGIN"))return"#16a34a";
-    if(a.includes("CADASTR")||a.includes("ADICION"))return"#0ea5e9";
-    if(a.includes("IMPORT"))return"#d97706";
-    return t.muted;
+}
+function LogPanel({t}){
+  const[logsObj,setLogsObj]=useState({});
+  const[loading,setLoading]=useState(true);
+  const[error,setError]=useState("");
+  const[search,setSearch]=useState("");
+  const[user,setUser]=useState("");
+  const[action,setAction]=useState("");
+  const[from,setFrom]=useState("");
+  const[to,setTo]=useState("");
+  const[page,setPage]=useState(1);
+  useEffect(()=>{
+    const ref=db.ref("logs");
+    const receive=snapshot=>{setLogsObj(snapshot.val()||{});setLoading(false);setError("")};
+    ref.on("value",receive,()=>{setError("Não foi possível carregar o histórico. Verifique sua conexão e permissão de acesso.");setLoading(false)});
+    return()=>ref.off("value",receive);
+  },[]);
+  useEffect(()=>setPage(1),[search,user,action,from,to]);
+  const logs=useMemo(()=>Object.entries(logsObj||{}).filter(([,log])=>log&&typeof log==="object").map(([id,log])=>({...log,id})).sort((a,b)=>historyTimestamp(b)-historyTimestamp(a)),[logsObj]);
+  const users=useMemo(()=>[...new Set(logs.map(log=>log.user).filter(Boolean))].sort((a,b)=>a.localeCompare(b,"pt-BR")),[logs]);
+  const actions=useMemo(()=>[...new Set(logs.map(log=>log.action).filter(Boolean))].sort((a,b)=>a.localeCompare(b,"pt-BR")),[logs]);
+  const invalidRange=Boolean(from&&to&&from>to);
+  const filtered=useMemo(()=>invalidRange?[]:filterHistory(logs,{search,user,action,from,to}),[logs,search,user,action,from,to,invalidRange]);
+  const pages=Math.max(1,Math.ceil(filtered.length/50));
+  const currentPage=Math.min(page,pages);
+  const visible=filtered.slice((currentPage-1)*50,currentPage*50);
+  const exportHistory=()=>{
+    try{
+      const rows=filtered.map(log=>({"Data e horário":log.ts||(historyTimestamp(log)?new Date(historyTimestamp(log)).toLocaleString("pt-BR"):"Não informado"),"Usuário":log.user||"Não informado","Ação":log.action||"Não informada","Detalhes":log.detail||""}));
+      const book=XLSX.utils.book_new();
+      const sheet=XLSX.utils.json_to_sheet(rows);
+      sheet["!cols"]=[{wch:24},{wch:28},{wch:30},{wch:90}];
+      XLSX.utils.book_append_sheet(book,sheet,"Histórico de uso");
+      XLSX.writeFile(book,"Historico_de_uso_"+new Date().toISOString().slice(0,10)+".xlsx");
+    }catch(e){setError("Não foi possível exportar o histórico. Tente novamente.")}
   };
-
-  const is={padding:"10px 14px",borderRadius:8,border:"1px solid "+t.border,background:t.input,color:t.text,fontSize:14,outline:"none",width:"100%",boxSizing:"border-box"};
-
+  const inputStyle={padding:"10px 12px",borderRadius:8,border:"1px solid "+t.border,background:t.input,color:t.text,fontSize:14,width:"100%",minWidth:0};
+  const buttonStyle={...inputStyle,width:"auto",cursor:"pointer"};
   return(
-    <div className="fade-in">
-      <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:20}}>
-        <div style={{width:42,height:42,borderRadius:12,background:t.accent+"22",display:"flex",alignItems:"center",justifyContent:"center",color:t.accent}}><Ico t="activity" sz={22}/></div>
-        <div><h2 style={{margin:0,fontSize:20,fontWeight:700,color:t.text}}>Movimentações</h2><p style={{margin:0,fontSize:13,color:t.muted}}>{filtered.length} registro(s)</p></div>
+    <section className="fade-in" aria-label="Histórico de uso">
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap",marginBottom:20}}>
+        <div><h2 style={{fontSize:22,color:t.text,marginBottom:6}}>Histórico de uso</h2><p style={{color:t.muted,fontSize:13}}>Acessos e atividades registrados na ferramenta. Atualização em tempo real.</p></div>
+        <button type="button" onClick={exportHistory} disabled={loading||!!error||!filtered.length} style={buttonStyle}>Exportar Excel ({filtered.length})</button>
       </div>
-
-      <div style={{display:"flex",gap:10,marginBottom:16,flexWrap:"wrap"}}>
-        <div style={{position:"relative",flex:"1 1 200px"}}>
-          <span style={{position:"absolute",left:12,top:"50%",transform:"translateY(-50%)",color:t.muted}}><Ico t="search" sz={16}/></span>
-          <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Buscar por usuário ou ação..." style={{...is,paddingLeft:36}}/>
-        </div>
-        <select className="type-select" value={filter} onChange={e=>setFilter(e.target.value)} style={{...is,width:"auto",minWidth:140,cursor:"pointer"}}>
-          <option value="all">Todas</option>
-          <option value="login">Logins</option>
-          <option value="exclu">Exclusões</option>
-          <option value="cadastr">Cadastros</option>
-          <option value="adicion">Adições</option>
-          <option value="import">Importações</option>
-        </select>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))",gap:12,marginBottom:16}}>
+        <label style={{color:t.muted,fontSize:12}}>Buscar<input aria-label="Buscar no histórico" placeholder="Usuário, ação ou detalhes" value={search} onChange={e=>setSearch(e.target.value)} style={inputStyle}/></label>
+        <label style={{color:t.muted,fontSize:12}}>Usuário<select value={user} onChange={e=>setUser(e.target.value)} style={inputStyle}><option value="">Todos os usuários</option>{users.map(name=><option key={name} value={name}>{name}</option>)}</select></label>
+        <label style={{color:t.muted,fontSize:12}}>Ação<select value={action} onChange={e=>setAction(e.target.value)} style={inputStyle}><option value="">Todas as ações</option>{actions.map(name=><option key={name} value={name}>{name}</option>)}</select></label>
+        <label style={{color:t.muted,fontSize:12}}>De<input type="date" value={from} onChange={e=>setFrom(e.target.value)} style={inputStyle}/></label>
+        <label style={{color:t.muted,fontSize:12}}>Até<input type="date" value={to} onChange={e=>setTo(e.target.value)} style={inputStyle}/></label>
       </div>
-
-      <div style={{background:t.card,borderRadius:14,border:"1px solid "+t.border,maxHeight:500,overflowY:"auto"}}>
-        {filtered.length===0?<div style={{padding:40,textAlign:"center",color:t.muted}}><div style={{fontSize:36,marginBottom:8,opacity:0.3}}>📋</div><div style={{fontSize:14}}>Nenhuma movimentação</div></div>
-        :filtered.map((l,i)=>(
-          <div key={i} className="log-entry" style={{padding:"12px 18px",borderBottom:"1px solid "+t.border+"22",display:"flex",alignItems:"center",gap:14,background:i%2===0?"transparent":t.input+"33"}}>
-            <div style={{width:8,height:8,borderRadius:"50%",background:actionColor(l.action),flexShrink:0}}/>
-            <div style={{flex:1,minWidth:0}}>
-              <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
-                <span style={{fontSize:11,fontWeight:700,color:actionColor(l.action),textTransform:"uppercase",letterSpacing:0.5}}>{l.action}</span>
-                <span style={{fontSize:12,color:t.muted}}>por <strong style={{color:t.text}}>{l.user}</strong></span>
-              </div>
-              <div style={{fontSize:13,color:t.muted,marginTop:2}}>{l.detail}</div>
-            </div>
-            <div className="log-time" style={{fontSize:11,color:t.muted,whiteSpace:"nowrap",flexShrink:0}}><Ico t="clock" sz={12}/> {l.ts}</div>
-          </div>
-        ))}
+      <div style={{display:"flex",gap:12,alignItems:"center",flexWrap:"wrap",marginBottom:16}}>
+        <button type="button" onClick={()=>{setSearch("");setUser("");setAction("");setFrom("");setTo("");setPage(1)}} style={buttonStyle}>Limpar filtros</button>
+        <span style={{color:t.muted,fontSize:13}}>{filtered.length} de {logs.length} registro(s) · {new Set(filtered.map(log=>log.user).filter(Boolean)).size} usuário(s)</span>
       </div>
-    </div>
+      {invalidRange&&<p role="alert" style={{color:"#ef4444",marginBottom:12}}>A data inicial precisa ser anterior ou igual à data final.</p>}
+      {error&&<p role="alert" style={{color:"#ef4444",marginBottom:12}}>{error}</p>}
+      <div style={{background:t.card,borderRadius:14,border:"1px solid "+t.border,overflowX:"auto"}}>
+        {loading?<p role="status" style={{padding:32,color:t.muted}}>Carregando histórico...</p>:!error&&(!visible.length?<p style={{padding:32,color:t.muted}}>Nenhum registro encontrado para os filtros selecionados.</p>:<table style={{width:"100%",borderCollapse:"collapse",minWidth:650,textAlign:"left"}}>
+          <thead><tr>{["Data e horário","Usuário","Ação","Detalhes"].map(label=><th key={label} scope="col" style={{padding:14,borderBottom:"1px solid "+t.border,color:t.muted,fontSize:12}}>{label}</th>)}</tr></thead>
+          <tbody>{visible.map(log=><tr key={log.id}><td style={{padding:14,fontSize:12,whiteSpace:"nowrap",verticalAlign:"top"}}>{log.ts||(historyTimestamp(log)?new Date(historyTimestamp(log)).toLocaleString("pt-BR"):"Não informado")}</td><td style={{padding:14,fontSize:13,verticalAlign:"top"}}>{log.user||"Não informado"}</td><td style={{padding:14,fontSize:12,color:t.accent,fontWeight:700,verticalAlign:"top"}}>{log.action||"Não informada"}</td><td style={{padding:14,fontSize:13,color:t.muted,overflowWrap:"anywhere"}}>{log.detail||""}</td></tr>)}</tbody>
+        </table>)}
+      </div>
+      <div style={{display:"flex",justifyContent:"flex-end",gap:12,alignItems:"center",marginTop:16}}>
+        <button type="button" disabled={currentPage<=1} onClick={()=>setPage(currentPage-1)} style={buttonStyle}>Anterior</button>
+        <span style={{fontSize:13,color:t.muted}}>Página {currentPage} de {pages}</span>
+        <button type="button" disabled={currentPage>=pages} onClick={()=>setPage(currentPage+1)} style={buttonStyle}>Próxima</button>
+      </div>
+      <p style={{fontSize:12,color:t.muted,marginTop:16}}>Abertura de sessão e navegação passam a ser registradas nesta versão. Atividades antigas aparecem conforme os registros já existentes.</p>
+    </section>
   );
 }
+
 
 /* ===== BACKUP PANEL (com aba de Histórico das 50 últimas versões) ===== */
 function BackupPanel({t,currentUser}){
@@ -1717,6 +1738,11 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
   const[tn,setTn]=useState(()=>localStorage.getItem("aso_theme")||"Oceano");
   const t=THEMES[tn];
   const[tab,setTab]=useState("dashboard");
+  useEffect(()=>{addLog("ACESSO À FERRAMENTA",currentUser,"Abriu a ferramenta com sessão ativa")},[currentUser]);
+  useEffect(()=>{
+    const pages={dashboard:"Dashboard",users:"Usuários",logs:"Histórico de uso",backups:"Backups"};
+    addLog("NAVEGAÇÃO",currentUser,"Abriu a página: "+(pages[tab]||tab));
+  },[tab,currentUser]);
   const[recs,setRecsLocal,recsLoading]=useFirebase("records",null);
   const[notesMap,setNotesMap,notesLoading]=useFirebase("notes",{});
   const[recsInit,setRecsInit]=useState(()=>localStorage.getItem("aso_rec_init")==="1");
@@ -2516,7 +2542,7 @@ function Dash({currentUser,userFoto,userRole,onLogout,onUpdateFoto}){
     {id:"dashboard",label:"Dashboard",icon:"list"},
     ...(isSenior?[
       {id:"users",label:"Usuários",icon:"users"},
-      {id:"logs",label:"Movimentações",icon:"activity"},
+      {id:"logs",label:"Histórico de uso",icon:"activity"},
       {id:"backups",label:"Backups",icon:"shield"},
     ]:[]),
   ];
@@ -3356,3 +3382,4 @@ if('serviceWorker' in navigator){
 </script>
 </body>
 </html>
+
