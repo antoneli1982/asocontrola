@@ -3191,7 +3191,47 @@ function NoteModal({recName,recKey,theme:t,onClose,onNoteChange,notesMap,onSaveN
   };
   const printNote=()=>{
     const w=window.open("","_blank");
-    w.document.write(`<html><head><title>Informações — ${recName}</title><style>body{font-family:'Segoe UI',sans-serif;padding:40px;color:#1f2937}h2{border-bottom:2px solid #cbd5e1;padding-bottom:10px}.content{padding:20px;border:1px solid #d1d5db;border-radius:8px;line-height:1.7}</style></head><body><h2>${recName}</h2><div class="content">${editorRef.current?.innerHTML||""}</div></body></html>`);
+    w.document.write(`<html><head><title>Informações — ${recName}</title><style>body{font-family:'Segoe UI',sans-serif;padding:40px;color:#1f2937}h2{border-bottom:2px solid #cbd5e1;padding-bottom:10px}.content{padding:20px;border:1px solid #d1d5db;border-radius:8px;line-height:1.7}</style></head><body><h2>${recName}</h2><div class="content">${editorRef.current?.innerHTML||""}</div><style>
+#shutdown-notice{margin:auto;width:calc(100% - 32px);max-width:480px;padding:28px;border:2px solid #f59e0b;border-radius:16px;background:#112240;color:#fff;box-shadow:0 20px 60px #0008;font-family:'Segoe UI',sans-serif}
+#shutdown-notice::backdrop{background:rgba(0,0,0,0.7)}
+#shutdown-notice h2{font-size:21px;color:#fbbf24;margin-bottom:16px}
+#shutdown-notice p{font-size:17px;line-height:1.6;margin-bottom:24px;font-weight:700}
+#shutdown-notice button{display:block;margin-left:auto;padding:12px 24px;border:0;border-radius:8px;background:#fbbf24;color:#112240;font-weight:700;font-size:15px}
+</style>
+<dialog id="shutdown-notice" aria-labelledby="shutdown-notice-title" aria-describedby="shutdown-notice-message">
+  <h2 id="shutdown-notice-title">Aviso de desativação</h2>
+  <p id="shutdown-notice-message">A FERRAMENTA SERÁ DESATIVADA ATÉ O DIA 18/11/2025, SALVE TODOS OS DADOS</p>
+  <form method="dialog"><button autofocus>Entendi</button></form>
+</dialog>
+<script>
+/* Repeat after two minutes of visible use, without stacking notices. */
+(() => {
+  const notice = document.getElementById('shutdown-notice');
+  const interval = 2 * 60 * 1000;
+  let elapsed = 0;
+  let lastTick = performance.now();
+  let visible = !document.hidden;
+  const tick = () => {
+    const now = performance.now();
+    if (visible && !notice.open) elapsed += now - lastTick;
+    lastTick = now;
+    if (elapsed >= interval && !document.hidden && !notice.open) {
+      elapsed = 0;
+      notice.showModal();
+    }
+  };
+  document.addEventListener('visibilitychange', () => {
+    tick();
+    visible = !document.hidden;
+  });
+  notice.addEventListener('close', () => {
+    elapsed = 0;
+    lastTick = performance.now();
+  });
+  setInterval(tick, 1000);
+})();
+</script>
+</body></html>`);
     w.document.close();w.print();
   };
   const insertBullet=(icon,label)=>{
