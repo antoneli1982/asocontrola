@@ -1,8 +1,10 @@
-const CACHE_NAME = 'aso-controla-v8';
+const CACHE_NAME = 'aso-controla-v9';
 const ASSETS = [
   './',
   './index.html',
   './manifest.json',
+  './design-system.css',
+  './theme.js',
   'https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js',
   'https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js',
   'https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js',
