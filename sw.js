@@ -1,10 +1,10 @@
-const CACHE_NAME = 'aso-controla-v10';
+const CACHE_NAME = 'aso-controla-v11';
 const ASSETS = [
   './',
   './index.html',
   './manifest.json',
-  './design-system.css',
-  './theme.js',
+  './design-system.css?v=20261111-colorido-2',
+  './theme.js?v=20261111-colorido-2',
   'https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js',
   'https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js',
   'https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js',
@@ -17,7 +17,7 @@ const ASSETS = [
 self.addEventListener('install', e => {
   e.waitUntil(
     caches.open(CACHE_NAME)
-      .then(cache => cache.addAll(ASSETS))
+      .then(cache => cache.addAll(ASSETS.map(asset => new Request(asset, { cache: 'reload' }))))
       .then(() => self.skipWaiting())
   );
 });
@@ -38,8 +38,15 @@ self.addEventListener('fetch', e => {
   // Skip non-GET requests
   if (e.request.method !== 'GET') return;
 
+  // Revalidate app files so a new page cannot receive an older theme from HTTP cache.
+  const url = new URL(e.request.url);
+  const isAppFile = url.origin === self.location.origin && (
+    e.request.mode === 'navigate' ||
+    /\/(?:index\.html|theme\.js|design-system\.css)$/.test(url.pathname)
+  );
+
   e.respondWith(
-    fetch(e.request)
+    fetch(e.request, isAppFile ? { cache: 'no-cache' } : undefined)
       .then(response => {
         // Clone and cache successful responses
         if (response && response.status === 200) {

@@ -103,8 +103,8 @@ select{-webkit-appearance:auto;appearance:auto}
   .header-bar{padding-top:max(10px,env(safe-area-inset-top))!important}
 }
 </style>
-<link rel="stylesheet" href="design-system.css">
-<script src="theme.js"></script>
+<link rel="stylesheet" href="design-system.css?v=20261111-colorido-2">
+<script src="theme.js?v=20261111-colorido-2"></script>
 </head>
 <body>
 <div id="root"></div>
@@ -3311,7 +3311,7 @@ ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
 <script>
 if('serviceWorker' in navigator){
   window.addEventListener('load',()=>{
-    navigator.serviceWorker.register('sw.js').then(r=>{
+    navigator.serviceWorker.register('sw.js',{updateViaCache:'none'}).then(r=>{
       console.log('SW registrado:',r.scope);
       // Check for updates periodically
       setInterval(()=>r.update(),60*60*1000);
