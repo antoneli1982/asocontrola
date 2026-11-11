@@ -1,4 +1,4 @@
-const CACHE_NAME = 'aso-controla-v9';
+const CACHE_NAME = 'aso-controla-v10';
 const ASSETS = [
   './',
   './index.html',

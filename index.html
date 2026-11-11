@@ -600,7 +600,7 @@ function Brand({className=""}){
 }
 function ThemeSwitch({value,onChange}){
   return <div className="theme-switch" role="group" aria-label="Tema da interface">
-    {[["Claro","sun"],["Escuro","moon"]].map(([name,icon])=><button type="button" key={name} onClick={()=>onChange(name)} aria-label={"Tema "+name.toLowerCase()} aria-pressed={value===name} title={"Usar tema "+name.toLowerCase()}><Ico t={icon} sz={15}/><span className="theme-label">{name}</span></button>)}
+    {[["Claro","sun"],["Escuro","moon"],["Colorido","palette"]].map(([name,icon])=><button type="button" key={name} onClick={()=>onChange(name)} aria-label={"Tema "+name.toLowerCase()} aria-pressed={value===name} title={"Usar tema "+name.toLowerCase()}><Ico t={icon} sz={15}/><span className="theme-label">{name}</span></button>)}
   </div>;
 }
 
